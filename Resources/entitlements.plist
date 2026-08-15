@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Only used when MCPB_HARDENED=1; scripts/pack.sh passes this file to codesign
+	     alongside --options runtime.
+
+	     The hardened runtime blocks a process from sending Apple events unless it holds
+	     this entitlement, and Apple events are how the note field is reached at all:
+	     Contacts.framework refuses CNContactNoteKey without
+	     com.apple.developer.contacts.notes, which is a managed capability requiring a
+	     provisioning profile that a command-line binary has nowhere to carry.
+
+	     Unlike that one, this entitlement is not restricted — no request to Apple and no
+	     profile. It only opts back into something the hardened runtime took away. -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+</dict>
+</plist>

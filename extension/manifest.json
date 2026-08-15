@@ -1,0 +1,91 @@
+{
+  "manifest_version": "0.3",
+  "name": "apple-contacts-mcp",
+  "display_name": "Apple Contacts",
+  "version": "1.0.0",
+  "description": "Search, read and edit the macOS Contacts app through Contacts.framework",
+  "long_description": "A local MCP server written in Swift that gives Claude access to the Contacts app on this Mac.\n\nThere is no network, no account and no API key. iCloud is only the sync engine that fills the local address book; this server reads and writes that local store. The gate is macOS privacy consent: the first time a tool needs the address book, macOS asks, and the grant appears under System Settings → Privacy & Security → Contacts.\n\nEvery field Contacts stores is reachable, including Lists and who belongs to them. The Notes field is the one exception to how everything else works: macOS only exposes it to apps holding an entitlement Apple grants by request, which a self-contained binary cannot carry, so notes are read and written through the Contacts app instead. That needs a second permission, under System Settings → Privacy & Security → Automation, which also covers the two other things the framework cannot do from here: changing List membership on a contact that has a note (either direction), and updating any other field on one. Everything else works without it.\n\ncreate_contact can add the new contact to a List in the same call, which is the preferred way to do it — a follow-up update_contact_lists call on a noted contact needs the Automation permission above; doing it at creation does not.\n\nPlug and play, with one hardening switch: everything else is a fixed constant, and the per-tool allow/ask/prohibit switch in Claude Desktop is the only other knob. \"Allow photo writes\" is the deliberate exception — turn it off and no call, including create_contact and update_contact, may set or clear a contact's photo. Turning off create_contact, update_contact, update_contact_lists and delete_contact leaves a read-only server. delete_contact is permanent, requires an explicit confirmation, and returns the full record it removed together with the call that would recreate it. update_contact_lists only changes list membership — it never deletes anyone.\n\nNot affiliated with or endorsed by Apple Inc.",
+  "author": {
+    "name": "eneko-codes",
+    "url": "https://github.com/eneko-codes"
+  },
+  "homepage": "https://github.com/eneko-codes/apple-contacts-mcp",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/eneko-codes/apple-contacts-mcp"
+  },
+  "license": "MIT",
+  "icon": "icon.png",
+  "keywords": [
+    "contacts",
+    "address book",
+    "macos",
+    "apple",
+    "people"
+  ],
+  "server": {
+    "type": "binary",
+    "entry_point": "server/apple-contacts-mcp",
+    "mcp_config": {
+      "command": "${__dirname}/server/apple-contacts-mcp",
+      "args": [
+        "--disable-photo-writes",
+        "${user_config.disable_photo_writes}"
+      ],
+      "env": {}
+    }
+  },
+  "tools": [
+    {
+      "name": "contacts_status",
+      "description": "Report whether Contacts and Automation access are granted, and how to grant them. Reads no records."
+    },
+    {
+      "name": "contacts_search",
+      "description": "Find people by name, nickname, company, phone or email"
+    },
+    {
+      "name": "contacts_all",
+      "description": "List every contact, or everyone in one List. Reads the whole address book."
+    },
+    {
+      "name": "contacts_lists",
+      "description": "Show the Lists and the accounts they belong to"
+    },
+    {
+      "name": "contacts_get",
+      "description": "Read every field stored for one contact, including its Lists and note"
+    },
+    {
+      "name": "create_contact",
+      "description": "Add a new contact to the address book"
+    },
+    {
+      "name": "update_contact",
+      "description": "Change fields on an existing contact"
+    },
+    {
+      "name": "update_contact_lists",
+      "description": "Add a contact to Lists or remove it from them. Never deletes the contact."
+    },
+    {
+      "name": "delete_contact",
+      "description": "Permanently delete a contact. Requires explicit confirmation."
+    }
+  ],
+  "user_config": {
+    "disable_photo_writes": {
+      "type": "boolean",
+      "title": "Disallow photo writes",
+      "description": "When on, no tool may set or clear a contact's photo, even if photo_path is passed to create_contact or update_contact. Every other field is unaffected.",
+      "default": false,
+      "required": false
+    }
+  },
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": [
+      "darwin"
+    ]
+  }
+}
