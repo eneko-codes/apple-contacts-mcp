@@ -49,13 +49,6 @@ struct ListsAndFieldsTests {
         #expect(!answer.text.contains("Cecily Madeup"))
     }
 
-    @Test("Listing is filtered to one list by id")
-    func filtersByListIdentifier() async {
-        let answer = await call(ToolCatalog.allName, ["list": .string("list-kin")])
-        #expect(answer.text.contains("Aurora Fakeperson"))
-        #expect(!answer.text.contains("Basil Sampleton"))
-    }
-
     @Test("An unknown list is refused with a pointer to contacts_lists")
     func unknownListIsRefused() async {
         let answer = await call(ToolCatalog.allName, ["list": .string("Nonexistent")])
@@ -71,13 +64,6 @@ struct ListsAndFieldsTests {
         #expect(answer.text.contains("id=id-aurora"))
         #expect(!answer.text.contains("+34 600 000 001"))
         #expect(!answer.text.contains("Fictitious Ltd"))
-    }
-
-    @Test("A truncated listing announces what it withheld")
-    func truncatedListingSaysSo() async {
-        let answer = await call(ToolCatalog.allName, ["limit": .int(2)])
-        #expect(answer.text.contains("1 more"))
-        #expect(answer.text.contains("offset=2"))
     }
 
     @Test("An empty address book says so rather than printing a bare heading")

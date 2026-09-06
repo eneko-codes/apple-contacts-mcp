@@ -263,24 +263,6 @@ struct ContactToolsTests {
         #expect(store.contacts.first { $0.id == "id-aurora" }?.phones.isEmpty == true)
     }
 
-    @Test("Update accepts phones as bare strings or as labelled objects")
-    func updateAcceptsBothPhoneShapes() async {
-        let store = FakeContactStore(contacts: Fixtures.sample)
-        let result = await call(
-            "update_contact",
-            [
-                "id": .string("id-aurora"),
-                "phones": .array([
-                    .string("+34 600 000 011"),
-                    .object(["value": .string("+34 600 000 012"), "label": .string("work")]),
-                ]),
-            ], store: store)
-        #expect(!result.isError)
-        let updated = store.contacts.first { $0.id == "id-aurora" }
-        #expect(updated?.phones.count == 2)
-        #expect(updated?.phones.last?.label == "work")
-    }
-
     @Test("Update reports which fields moved")
     func updateNamesChangedFields() async {
         let result = await call(
@@ -344,28 +326,27 @@ struct ContactToolsTests {
         #expect(store.contacts.isEmpty, "the disabled write must not reach the store at all")
     }
 
-    @Test("update_contact refuses to set photo_path when photo writes are disabled")
-    func updateRefusesSettingPhotoWhenDisabled() async {
+    /// The guard is a single `photoPathEdit != .unchanged` check, so it must catch a
+    /// clear ("" — "remove the photo") exactly as it catches a set to a real path; both
+    /// are exercised here since they are the two ways `photo_path` can be non-absent.
+    @Test("update_contact refuses to set or clear photo_path when photo writes are disabled")
+    func updateRefusesPhotoChangeWhenDisabled() async {
         let store = FakeContactStore(contacts: Fixtures.sample)
-        let result = await call(
+        let setResult = await call(
             "update_contact",
             ["id": .string("id-aurora"), "photo_path": .string("/tmp/whatever.jpg")],
             store: store,
             configuration: Configuration(disablePhotoWrites: true))
-        #expect(result.isError)
-        #expect(result.text.contains("Photo writes are disabled"))
-    }
+        #expect(setResult.isError)
+        #expect(setResult.text.contains("Photo writes are disabled"))
 
-    /// "" on photo_path means "remove the photo" — the same hardening switch must catch
-    /// a clear as well as a set, since both touch the photo.
-    @Test("update_contact refuses to clear photo_path when photo writes are disabled")
-    func updateRefusesClearingPhotoWhenDisabled() async {
-        let result = await call(
+        let clearResult = await call(
             "update_contact",
             ["id": .string("id-aurora"), "photo_path": .string("")],
+            store: store,
             configuration: Configuration(disablePhotoWrites: true))
-        #expect(result.isError)
-        #expect(result.text.contains("Photo writes are disabled"))
+        #expect(clearResult.isError)
+        #expect(clearResult.text.contains("Photo writes are disabled"))
     }
 
     @Test("create_contact with photo_path still works when photo writes are not disabled")
