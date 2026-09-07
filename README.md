@@ -46,6 +46,20 @@ sub-locality and ISO country code, social profiles, instant messaging handles, r
 people, birthday, other dates such as anniversaries, the photo, the note, and whether the
 record is a person or a company.
 
+## Frameworks and APIs
+
+| Used | For | Reference |
+|---|---|---|
+| Contacts — `CNContactStore`, `CNContact`/`CNMutableContact`, `CNGroup`, `CNContainer`, `CNSaveRequest`, `CNLabeledValue`, `CNContactFormatter` | Every read, and most writes | [Contacts](https://developer.apple.com/documentation/contacts) |
+| Apple events — `AEDeterminePermissionToAutomateTarget`, `osascript` | The note field, and the saves Contacts.framework refuses on a noted contact | [Apple Events](https://developer.apple.com/documentation/coreservices/apple_events) |
+| `NSContactsUsageDescription`, `NSAppleEventsUsageDescription` | The two consent strings macOS shows | [Information Property List](https://developer.apple.com/documentation/bundleresources/information-property-list/nscontactsusagedescription) |
+
+Contacts areas this server does not use: `CNContactVCardSerialization` (no vCard import or
+export), the change-history stack (`CNChangeHistoryFetchRequest`), `CNPostalAddressFormatter`,
+`CNContactsUserDefaults`, and `CNMutableGroup` — Lists can be joined and left, but not
+created, renamed or deleted. ContactsUI is a user-interface framework and has no place in a
+stdio server.
+
 ## Install
 
 ### 1. Build the bundle
@@ -105,7 +119,9 @@ note raises it, and the entry then appears under
 System Settings → Privacy & Security → Automation → **apple-contacts-mcp** → Contacts
 (Spanish UI: Ajustes del Sistema → Privacidad y seguridad → Automatización).
 
-Everything except the note works without it. `contacts_status` reports both permissions
+Reads and contact creation work without it. Automation is also needed to update any field
+on a contact that carries a note, and to change List membership on one, because the save
+reaches through Contacts.app in those cases. `contacts_status` reports both permissions
 separately, so a note that will not appear is one call away from an explanation.
 
 ### Signing, and why it is not optional
@@ -148,7 +164,9 @@ Apple, no profile.
 
 ## Tool switches
 
-Plug and play: there is nothing to configure. Every tool can be turned on and off
+One setting: `disable_photo_writes`, offered as a `user_config` in the bundle and passed as
+`--disable-photo-writes`. With it on, a write that would replace a contact's photo is
+refused. Every tool can also be turned on and off
 individually, because the bundle declares them all in its manifest. That is where policy
 lives — not in this code. The server exposes the full capability of the app; which parts
 are reachable at any moment is your decision.
@@ -209,7 +227,7 @@ swift build
 swift test
 ```
 
-79 tests, all against an in-memory fake. They need no permissions and never touch a real
+75 tests across four suites, all against an in-memory fake. They need no permissions and never touch a real
 address book — see `CLAUDE.md`, whose first section is the rule that makes that
 non-negotiable.
 
