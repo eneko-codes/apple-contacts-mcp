@@ -213,8 +213,7 @@ swift test
 address book — see `CLAUDE.md`, whose first section is the rule that makes that
 non-negotiable.
 
-Manual verification against a live address book is the owner's job; `verification.md`
-is the script for it.
+Manual verification against a live address book is the owner's job.
 
 ## Licence
 
