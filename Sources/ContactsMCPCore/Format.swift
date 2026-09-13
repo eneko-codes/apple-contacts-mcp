@@ -242,14 +242,15 @@ public enum Format {
 
         var text = contact.displayName + "\n" + block(rows)
         if contact.note == nil {
-            // A missing note is a permission story, not a fact about this person, and
+            // A missing note is a story about the route, not a fact about this person, and
             // saying nothing would let it read as "this contact has no note".
             text += """
 
 
                 (The note could not be read. It is the one field that comes from
-                Contacts.app rather than Contacts.framework, and that needs Automation
-                permission — call contacts_status to see whether it is granted.)
+                Contacts.app rather than Contacts.framework, which needs Automation
+                permission and a Contacts.app holding no unsaved changes — call
+                contacts_status to see which is missing.)
                 """
         }
         return text
@@ -401,7 +402,7 @@ public enum Format {
 
     public static func status(
         _ authorization: ContactsAuthorization, automation: AutomationConsent,
-        binaryPath: String
+        contactsAppUnsaved: Bool, binaryPath: String
     ) -> String {
         let headline: String
         switch authorization {
@@ -423,6 +424,9 @@ public enum Format {
         // Reported separately because it is a different switch in a different pane, and
         // it gates exactly one field.
         text += "\n\n" + ToolError.automationMessage(automation)
+        if contactsAppUnsaved {
+            text += "\n\nContacts.app has UNSAVED changes. " + ToolError.unsavedChangesConsequence
+        }
         return text
     }
 }

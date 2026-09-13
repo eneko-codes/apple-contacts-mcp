@@ -9,6 +9,7 @@ import Foundation
 final class FakeContactStore: ContactStore, @unchecked Sendable {
     var status: ContactsAuthorization
     var automation: AutomationConsent
+    var contactsAppUnsaved = false
     var contacts: [ContactDetail]
     /// List metadata, and who is in each one keyed by list id — the same shape
     /// Contacts forces on the real store, which has no reverse index either.
@@ -42,6 +43,8 @@ final class FakeContactStore: ContactStore, @unchecked Sendable {
     func authorization() -> ContactsAuthorization { status }
 
     func automationConsent() -> AutomationConsent { automation }
+
+    func contactsAppHasUnsavedChanges() -> Bool { contactsAppUnsaved }
 
     @discardableResult
     func requestAccess() async -> ContactsAuthorization {

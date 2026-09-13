@@ -30,6 +30,12 @@ public protocol ContactStore: Sendable {
     /// pane in System Settings.
     func automationConsent() -> AutomationConsent
 
+    /// Whether Contacts.app holds changes it has not saved. While it does, nothing is read
+    /// or written through it: its `save` was measured returning without saving, and what
+    /// it reads back then is its own unsaved model rather than the address book. False
+    /// when Contacts.app is not running, since asking would launch it.
+    func contactsAppHasUnsavedChanges() -> Bool
+
     /// `offset` is a plain index into the match list. Contacts has no cursor of its
     /// own, and an offset is stable enough for a result set the caller is paging
     /// through in one sitting.

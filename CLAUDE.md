@@ -32,6 +32,10 @@ The framework offers more than this server exposes. Before proposing a tool, che
 - ContactsUI in its entirety — it is a user-interface framework, and this is a stdio server.
 - `CNContactNoteKey` is named but never fetched through the framework: a save touching a noted contact needs an entitlement this server does not have, so the note is read and written through Contacts.app instead.
 
+## Contacts.app writes
+
+Contacts.app's `save` can return with no error and save nothing. Measured: a Contacts.app open for two days held seventy unsaved notes with `unsaved` true, while a freshly launched one saved normally — it is a state, not a constant. A read-back through Contacts.app is not evidence: it answers from its own unsaved model. The only independent check of a note is the store on disk. Every script therefore gates on `unsaved` before and after its change (`ContactsAppScripting`); do not remove that to make a write "work".
+
 ## The live-check executable
 
 `Sources/contacts-live-check` is a second executable that writes to the **real** address book. It is not part of `swift test` and must never be run to satisfy a test. Running it is live data under the rule above: ask first.
