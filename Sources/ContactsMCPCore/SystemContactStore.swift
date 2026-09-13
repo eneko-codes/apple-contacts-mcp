@@ -723,10 +723,10 @@ public struct SystemContactStore: ContactStore {
             do {
                 try notes.write(changes.note.applied(to: current), id: existing.identifier)
                 noteWritten = true
-            } catch ToolError.contactsAppUnsaved(let changeInMemory) {
+            } catch let error as ToolError where error.isContactsAppSaveState {
                 // Not a permission problem, so not `noteFailure`, whose message sends the
                 // reader to the Automation pane.
-                throw ToolError.contactsAppUnsaved(changeInMemory: changeInMemory)
+                throw error
             } catch {
                 throw ToolError.noteFailure(Self.describe(error))
             }
@@ -818,10 +818,10 @@ public struct SystemContactStore: ContactStore {
             }
             do {
                 try notes.update(id: id, changes: changes)
-            } catch ToolError.contactsAppUnsaved(let changeInMemory) where !noteWritten {
+            } catch let error as ToolError where error.isContactsAppSaveState && !noteWritten {
                 // Its message is the whole truth only while nothing else was written; after
                 // a saved note it would understate what landed, so that case goes below.
-                throw ToolError.contactsAppUnsaved(changeInMemory: changeInMemory)
+                throw error
             } catch let fallbackError {
                 var detail = Self.describe(error)
                 detail += " | Contacts.app could not apply the change either: "
@@ -916,8 +916,8 @@ public struct SystemContactStore: ContactStore {
             do {
                 try notes.changeMembership(contactID: id, groupNamed: group.name, adding: adding)
                 usedContactsApp = true
-            } catch ToolError.contactsAppUnsaved(let changeInMemory) {
-                throw ToolError.contactsAppUnsaved(changeInMemory: changeInMemory)
+            } catch let error as ToolError where error.isContactsAppSaveState {
+                throw error
             } catch let fallbackError {
                 var detail = ""
                 if let frameworkError {

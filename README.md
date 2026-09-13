@@ -127,14 +127,18 @@ separately, so a note that will not appear is one call away from an explanation.
 **A save through Contacts.app is checked, not assumed.** Contacts.app's `save` was
 observed returning with no error while saving nothing: the edits stayed in its own
 memory, reading them back through it returned them as if stored, and neither the address
-book on disk nor iCloud ever received them. A freshly launched Contacts.app saved the
-same kind of edit normally, so this is a state it can get stuck in, not a save that never
-works — and nothing on the outside says when it has. So every script checks Contacts.app's
-`unsaved` property before and after its change. A call is refused untouched when
-Contacts.app already holds unsaved changes — its save writes all of them at once — and
-reports the edit as not stored when it is still unsaved after `save`. Meanwhile notes
-read as unavailable, and `contacts_status` says Contacts.app has unsaved changes.
-Quitting Contacts.app discards them.
+book on disk nor iCloud ever received them. The measured cause is a contact
+that Screen Time allows during downtime: every save touching one fails this way, whatever
+field changes, while an otherwise identical card saves normally. Contacts.framework does
+not expose that flag, so such a contact cannot be spotted before the save is tried.
+
+So every script checks Contacts.app's `unsaved` property before and after its change. A
+call is refused untouched when Contacts.app already holds unsaved changes — its save
+writes all of them at once — and notes read as unavailable meanwhile, which
+`contacts_status` reports. When the call's own save did not happen, the call fails and
+Contacts.app is quit without saving. That discards only that edit, since nothing else was
+pending, and it is the only way out: a failed edit left in place blocks every later write
+until Contacts.app is quit by hand.
 
 ### Signing, and why it is not optional
 
@@ -218,6 +222,10 @@ precisely so you can tell them apart.
 - **Unsaved changes in Contacts.app block notes.** The check above cannot tell whose
   pending edits they are, so while Contacts.app holds any, notes are neither read nor
   written, and neither are the fields or List membership of a contact that has one.
+- **A contact Screen Time allows during downtime cannot be changed through Contacts.app.**
+  That covers its note, and any field or List change on it when it has a note. The call
+  fails and says so, and Contacts.app is quit to discard the edit. Take the contact off
+  the allowed list for the change, or edit it by hand in Contacts.app or on iCloud.com.
 - **Reading a note launches the Contacts app.** In the background, but it does launch,
   and the first call after a cold start is slow.
 - **Lists cannot be created, renamed or deleted here.** Membership can be changed;
