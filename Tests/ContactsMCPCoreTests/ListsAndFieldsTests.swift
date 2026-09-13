@@ -496,16 +496,18 @@ struct ListsAndFieldsTests {
     }
 
     /// The failure this replaces was a write reported as done that existed only in
-    /// Contacts.app's memory. The two cases must not read alike.
-    @Test("An edit Contacts.app did not save is never described as written")
-    func unsavedEditIsNotReportedAsWritten() {
-        let inMemory = ToolError.contactsAppUnsaved(changeInMemory: true).message
-        #expect(inMemory.contains("did not reach the address book"))
-        #expect(inMemory.contains("Do not report it as written"))
+    /// Contacts.app's memory. A failed save is discarded and leaves nothing blocked, so it
+    /// must not claim notes are blocked; a refusal is the case that does.
+    @Test("A save Contacts.app did not make names its cause and blocks nothing")
+    func failedSaveIsNotReportedAsWritten() {
+        let failed = ToolError.contactsAppSaveFailed.message
+        #expect(failed.contains("was not saved"))
+        #expect(failed.contains("Screen Time"))
+        #expect(!failed.contains(ToolError.unsavedChangesConsequence))
 
-        let refused = ToolError.contactsAppUnsaved(changeInMemory: false).message
+        let refused = ToolError.contactsAppUnsaved.message
         #expect(refused.contains("Nothing was changed"))
-        #expect(!refused.contains("did not reach the address book"))
+        #expect(refused.contains(ToolError.unsavedChangesConsequence))
     }
 
     // MARK: AppleScript escaping

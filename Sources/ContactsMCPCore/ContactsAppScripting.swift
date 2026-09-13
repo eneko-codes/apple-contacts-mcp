@@ -67,14 +67,21 @@ struct ContactsAppScripting: Sendable {
     /// two days, every one of them still in Contacts.app's scripting model, none of them in
     /// the store on disk, none synced to iCloud — and `unsaved` still true. Reading the note
     /// back through the same bridge returned the unsaved value, so a read-back is no
-    /// evidence of anything. A freshly launched Contacts.app saved the same edit normally,
-    /// so this is a state Contacts.app gets into, not a save that never works.
+    /// evidence of anything.
+    ///
+    /// The measured cause is a contact that Screen Time allows during downtime: every save
+    /// touching one fails this way, whatever field changes, while a card differing only by
+    /// that flag saves normally. Contacts.framework exposes no such property, so the contact
+    /// cannot be recognised before the save is tried.
     ///
     /// So every script checks `unsaved` on both sides of its change. Before: a document that
     /// already holds unsaved edits is refused untouched, because `save` writes every pending
     /// edit at once — stale copies of other contacts included — and a document whose save
-    /// has failed once has not been seen to recover. After: still unsaved means the change
-    /// exists only in Contacts.app's memory, whatever `save` returned.
+    /// has failed once never recovers. After: still unsaved means the save did not happen,
+    /// and Contacts.app is quit without saving. That discards exactly this script's edit and
+    /// nothing else — the check before guarantees nothing else was pending — and it is the
+    /// only way out: left alone, the failed edit blocks every later write until someone
+    /// quits Contacts.app by hand.
     ///
     /// Tradeoff, stated: the check cannot tell this server's pending edits from anybody
     /// else's, so an edit pending in Contacts.app for any reason blocks note I/O here until
@@ -83,8 +90,12 @@ struct ContactsAppScripting: Sendable {
     private static let unsavedAfterMarker = "apple-contacts-mcp: unsaved after save"
     private static let refuseIfUnsaved =
         "if unsaved then error \(AppleScriptString.literal(unsavedBeforeMarker))"
-    private static let confirmSaved =
-        "if unsaved then error \(AppleScriptString.literal(unsavedAfterMarker))"
+    private static let confirmSaved = """
+        if unsaved then
+            quit saving no
+            error \(AppleScriptString.literal(unsavedAfterMarker))
+        end if
+        """
 
     /// Whether Contacts.app holds changes it has not saved. False when that cannot be
     /// asked without launching Contacts.app: a process that is not running holds nothing.
@@ -529,12 +540,8 @@ struct ContactsAppScripting: Sendable {
         guard process.terminationStatus == 0 else {
             let message = String(decoding: stderr, as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            if message.contains(Self.unsavedBeforeMarker) {
-                throw ToolError.contactsAppUnsaved(changeInMemory: false)
-            }
-            if message.contains(Self.unsavedAfterMarker) {
-                throw ToolError.contactsAppUnsaved(changeInMemory: true)
-            }
+            if message.contains(Self.unsavedBeforeMarker) { throw ToolError.contactsAppUnsaved }
+            if message.contains(Self.unsavedAfterMarker) { throw ToolError.contactsAppSaveFailed }
             throw ToolError.storeFailure(message)
         }
         return String(decoding: stdout, as: UTF8.self)

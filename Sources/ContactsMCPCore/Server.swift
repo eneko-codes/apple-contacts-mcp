@@ -4,7 +4,7 @@ import MCP
 public enum ContactsMCPServer {
 
     public static let name = "apple-contacts-mcp"
-    public static let version = "1.0.1"
+    public static let version = "1.0.2"
 
     /// Returned from `initialize`. It carries the two things per-tool descriptions
     /// cannot state once: that ids come from a search and are not durable, and that
@@ -30,12 +30,14 @@ public enum ContactsMCPServer {
         with no workaround; the other two are because a save touching a noted contact \
         needs a key this server is not allowed to read, regardless of what is changing.
 
-        Contacts.app can accept a change and not save it, without any error. Every write \
-        through it is checked afterwards, and none is made while Contacts.app already holds \
-        unsaved changes: such a call is refused and says why, and notes read as unavailable \
-        meanwhile, because what Contacts.app would return need not be what the address \
-        book stores. contacts_status reports this state. Only tell someone a note was \
-        written when the tool call succeeded.
+        Contacts.app can accept a change and not save it, without any error — it does so \
+        for every contact that Screen Time allows during downtime, whatever field is \
+        changing. Every write through it is checked: a save that did not happen fails the \
+        call, and its edit is discarded by quitting Contacts.app without saving, which is \
+        only done when Contacts.app held no other unsaved changes. No write is made while \
+        it already holds some; such a call is refused, notes read as unavailable meanwhile, \
+        and contacts_status reports it. Only tell someone a change was made when the tool \
+        call succeeded.
 
         create_contact accepts lists and applies membership in the same save as the \
         creation — prefer that over a follow-up update_contact_lists call when the \

@@ -14,10 +14,10 @@ public enum ToolError: Error, Equatable {
     case emptyListChange
     case storeFailure(String)
     case noteFailure(String)
-    /// Contacts.app holds changes it has not saved. `changeInMemory` says whether this
-    /// call's own edit is among them (it was made, then `save` did not persist it) or
-    /// whether the call was refused before touching anything.
-    case contactsAppUnsaved(changeInMemory: Bool)
+    /// Contacts.app already held unsaved changes, so the call was refused untouched.
+    case contactsAppUnsaved
+    /// This call's own save did not happen; its edit was discarded by quitting Contacts.app.
+    case contactsAppSaveFailed
     case photoWritesDisabled
 
     public var message: String {
@@ -100,26 +100,40 @@ public enum ToolError: Error, Equatable {
                 Contacts.app said: \(detail)
                 """
 
-        case .contactsAppUnsaved(let changeInMemory):
-            let headline =
-                changeInMemory
-                ? """
-                The change did not reach the address book.
-
-                Contacts.app accepted it and was told to save, but it still reports unsaved \
-                changes, and it raised no error. The edit exists only in Contacts.app's memory: \
-                the address book on disk, iCloud and other devices do not have it, and it is \
-                lost when Contacts.app quits. Do not report it as written.
-                """
-                : """
+        case .contactsAppUnsaved:
+            return """
                 Nothing was changed: Contacts.app is holding changes it has not saved, and \
                 this server will not add to them.
 
                 Contacts.app saves every pending change at once, so writing through it now \
                 could also write stale copies of other contacts.
+
+                """ + Self.unsavedChangesConsequence
+
+        case .contactsAppSaveFailed:
+            return """
+                The change was not saved, so nothing was changed.
+
+                Contacts.app accepted the edit, but its save did nothing and raised no error. \
+                Contacts.app was then quit without saving to discard that edit — it held no \
+                other unsaved changes beforehand — so nothing is left pending and later \
+                writes are unaffected.
+
+                The known cause is a contact that Screen Time allows during downtime \
+                (Screen Time's communication limits): every save through Contacts.app that \
+                touches such a contact fails this way, whatever field is changing. To change \
+                this contact, take it off that allowed list, make the change and add it \
+                back — or edit it by hand in Contacts.app or on iCloud.com, which is not \
+                affected.
                 """
-            return headline + "\n\n" + Self.unsavedChangesConsequence
         }
+    }
+
+    /// The two Contacts.app save-state failures. Their messages are complete as they
+    /// stand; wrapping them in another explanation — Automation, a framework error —
+    /// would send the reader after the wrong cause.
+    var isContactsAppSaveState: Bool {
+        self == .contactsAppUnsaved || self == .contactsAppSaveFailed
     }
 
     /// Shared by the refusal and by `contacts_status`, so the two cannot drift apart on

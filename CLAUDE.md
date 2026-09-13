@@ -34,7 +34,7 @@ The framework offers more than this server exposes. Before proposing a tool, che
 
 ## Contacts.app writes
 
-Contacts.app's `save` can return with no error and save nothing. Measured: a Contacts.app open for two days held seventy unsaved notes with `unsaved` true, while a freshly launched one saved normally — it is a state, not a constant. A read-back through Contacts.app is not evidence: it answers from its own unsaved model. The only independent check of a note is the store on disk. Every script therefore gates on `unsaved` before and after its change (`ContactsAppScripting`); do not remove that to make a write "work".
+Contacts.app's `save` can return with no error and save nothing. Measured cause: a contact that Screen Time allows during downtime (`ZDOWNTIMEWHITELIST` in the store, not exposed by Contacts.framework). Every save touching one fails, whatever field changes; a card with a WhatsApp-contributed IM and no flag saved fine. One failed save leaves `unsaved` true and blocks every later save. A read-back through Contacts.app is not evidence: it answers from its own unsaved model. The only independent check of a note is the store on disk. Every script therefore gates on `unsaved` before its change, and after it quits Contacts.app without saving when its own save did not happen (`ContactsAppScripting`); do not remove either to make a write "work".
 
 ## The live-check executable
 
