@@ -67,7 +67,8 @@ struct ContactsAppScripting: Sendable {
     /// two days, every one of them still in Contacts.app's scripting model, none of them in
     /// the store on disk, none synced to iCloud — and `unsaved` still true. Reading the note
     /// back through the same bridge returned the unsaved value, so a read-back is no
-    /// evidence of anything.
+    /// evidence of anything. A freshly launched Contacts.app saved the same edit normally,
+    /// so this is a state Contacts.app gets into, not a save that never works.
     ///
     /// So every script checks `unsaved` on both sides of its change. Before: a document that
     /// already holds unsaved edits is refused untouched, because `save` writes every pending

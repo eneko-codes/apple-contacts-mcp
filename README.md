@@ -127,7 +127,9 @@ separately, so a note that will not appear is one call away from an explanation.
 **A save through Contacts.app is checked, not assumed.** Contacts.app's `save` was
 observed returning with no error while saving nothing: the edits stayed in its own
 memory, reading them back through it returned them as if stored, and neither the address
-book on disk nor iCloud ever received them. So every script checks Contacts.app's
+book on disk nor iCloud ever received them. A freshly launched Contacts.app saved the
+same kind of edit normally, so this is a state it can get stuck in, not a save that never
+works — and nothing on the outside says when it has. So every script checks Contacts.app's
 `unsaved` property before and after its change. A call is refused untouched when
 Contacts.app already holds unsaved changes — its save writes all of them at once — and
 reports the edit as not stored when it is still unsaved after `save`. Meanwhile notes
