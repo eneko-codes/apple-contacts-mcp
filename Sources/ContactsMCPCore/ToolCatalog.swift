@@ -213,7 +213,8 @@ public enum ToolCatalog {
             exactly what to enable and where if it does not. Reads no contact data.
 
             It reports two separate permissions: Contacts, which every tool needs, and \
-            Automation of Contacts.app, which only the note field needs.
+            Automation of Contacts.app, which only the note field needs. It also says \
+            when Contacts.app holds unsaved changes, which blocks notes until resolved.
 
             It never raises a consent dialog itself — it reports the permission rather \
             than requesting it. The first other tool you call is what asks.
@@ -321,8 +322,9 @@ public enum ToolCatalog {
             earlier conversation without looking it up again.
 
             The note is read through Contacts.app rather than Contacts.framework, so it \
-            needs Automation permission; when that is missing the rest of the record is \
-            still returned and the output says so.
+            needs Automation permission and is unavailable while Contacts.app holds \
+            unsaved changes; in either case the rest of the record is still returned and \
+            the output says so.
             """,
         inputSchema: object(
             properties: [

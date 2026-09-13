@@ -481,6 +481,33 @@ struct ListsAndFieldsTests {
         #expect(answer.text.contains("Notes unavailable"))
     }
 
+    /// Contacts.app was measured holding seventy "saved" notes that never reached the
+    /// address book. Status is where a caller told "the note could not be read" goes next.
+    @Test("Status reports unsaved Contacts.app changes, and only when there are some")
+    func statusReportsUnsavedContactsApp() async {
+        let clean = FakeContactStore(contacts: Fixtures.sample)
+        #expect(!(await call(ToolCatalog.statusName, store: clean)).text.contains("UNSAVED"))
+
+        let unsaved = FakeContactStore(contacts: Fixtures.sample)
+        unsaved.contactsAppUnsaved = true
+        let answer = await call(ToolCatalog.statusName, store: unsaved)
+        #expect(answer.text.contains("Contacts.app has UNSAVED changes"))
+        #expect(answer.text.contains("notes cannot be read or written"))
+    }
+
+    /// The failure this replaces was a write reported as done that existed only in
+    /// Contacts.app's memory. The two cases must not read alike.
+    @Test("An edit Contacts.app did not save is never described as written")
+    func unsavedEditIsNotReportedAsWritten() {
+        let inMemory = ToolError.contactsAppUnsaved(changeInMemory: true).message
+        #expect(inMemory.contains("did not reach the address book"))
+        #expect(inMemory.contains("Do not report it as written"))
+
+        let refused = ToolError.contactsAppUnsaved(changeInMemory: false).message
+        #expect(refused.contains("Nothing was changed"))
+        #expect(!refused.contains("did not reach the address book"))
+    }
+
     // MARK: AppleScript escaping
 
     /// The one part of the Contacts.app bridge a test can reach, and the one where a

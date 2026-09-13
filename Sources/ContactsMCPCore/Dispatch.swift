@@ -44,6 +44,7 @@ public struct ContactTools: Sendable {
                 text(
                     Format.status(
                         store.authorization(), automation: store.automationConsent(),
+                        contactsAppUnsaved: store.contactsAppHasUnsavedChanges(),
                         binaryPath: Self.binaryPath))
             ]
         }

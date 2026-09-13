@@ -60,6 +60,45 @@ struct ContactsAppScripting: Sendable {
     /// and leaves consent undecided, which is a worse outcome than a slow call.
     private static let timeout: TimeInterval = 60
 
+    // MARK: Unsaved changes
+
+    /// **Contacts.app's `save` can return without saving, and without an error.** Measured
+    /// against a live address book: seventy notes set and "saved" through this bridge over
+    /// two days, every one of them still in Contacts.app's scripting model, none of them in
+    /// the store on disk, none synced to iCloud — and `unsaved` still true. Reading the note
+    /// back through the same bridge returned the unsaved value, so a read-back is no
+    /// evidence of anything.
+    ///
+    /// So every script checks `unsaved` on both sides of its change. Before: a document that
+    /// already holds unsaved edits is refused untouched, because `save` writes every pending
+    /// edit at once — stale copies of other contacts included — and a document whose save
+    /// has failed once has not been seen to recover. After: still unsaved means the change
+    /// exists only in Contacts.app's memory, whatever `save` returned.
+    ///
+    /// Tradeoff, stated: the check cannot tell this server's pending edits from anybody
+    /// else's, so an edit pending in Contacts.app for any reason blocks note I/O here until
+    /// it is saved or discarded. Refusing is recoverable; writing through it was not.
+    private static let unsavedBeforeMarker = "apple-contacts-mcp: unsaved before change"
+    private static let unsavedAfterMarker = "apple-contacts-mcp: unsaved after save"
+    private static let refuseIfUnsaved =
+        "if unsaved then error \(AppleScriptString.literal(unsavedBeforeMarker))"
+    private static let confirmSaved =
+        "if unsaved then error \(AppleScriptString.literal(unsavedAfterMarker))"
+
+    /// Whether Contacts.app holds changes it has not saved. False when that cannot be
+    /// asked without launching Contacts.app: a process that is not running holds nothing.
+    func hasUnsavedChanges() -> Bool {
+        // `.granted` is only ever reported for a running Contacts.app, so this cannot
+        // launch it as a side effect of a status check.
+        guard consent() == .granted else { return false }
+        let script = """
+            tell application id \(AppleScriptString.literal(Self.contactsBundleIdentifier))
+                return unsaved
+            end tell
+            """
+        return (try? run(script))?.trimmingCharacters(in: .whitespacesAndNewlines) == "true"
+    }
+
     // MARK: Notes
 
     /// The contact's note, or nil when Contacts.app could not be asked at all.
@@ -67,9 +106,13 @@ struct ContactsAppScripting: Sendable {
     /// nil and "" are different answers: "" is a contact with no note, nil is a note
     /// this server was not allowed to see. `ContactDetail.note` carries that
     /// distinction through to the output, which explains itself when it is nil.
+    ///
+    /// Also nil while Contacts.app holds unsaved changes: the note it would return then
+    /// comes from its own unsaved model, which need not be what the address book stores.
     func read(id: String) -> String? {
         let script = """
             tell application id \(AppleScriptString.literal(Self.contactsBundleIdentifier))
+                \(Self.refuseIfUnsaved)
                 set theNote to note of person id \(AppleScriptString.literal(id))
             end tell
             if theNote is missing value then return ""
@@ -85,13 +128,16 @@ struct ContactsAppScripting: Sendable {
     /// Sets the note, replacing whatever was there.
     ///
     /// `save` is not optional: Contacts.app buffers the change in its own document and
-    /// a script that stops without saving loses it, with no error to say so.
+    /// a script that stops without saving loses it, with no error to say so. Nor is it
+    /// sufficient — see "Unsaved changes".
     func write(_ note: String, id: String) throws {
         let script = """
             tell application id \(AppleScriptString.literal(Self.contactsBundleIdentifier))
+                \(Self.refuseIfUnsaved)
                 set note of person id \(AppleScriptString.literal(id)) to \
             \(AppleScriptString.literal(note))
                 save
+                \(Self.confirmSaved)
             end tell
             """
         _ = try run(script)
@@ -173,6 +219,7 @@ struct ContactsAppScripting: Sendable {
     func update(id: String, changes: ContactChanges) throws {
         var lines = [
             "tell application id \(AppleScriptString.literal(Self.contactsBundleIdentifier))",
+            Self.refuseIfUnsaved,
             "set thePerson to person id \(AppleScriptString.literal(id))",
         ]
 
@@ -314,6 +361,7 @@ struct ContactsAppScripting: Sendable {
         }
 
         lines.append("save")
+        lines.append(Self.confirmSaved)
         lines.append("end tell")
         _ = try run(lines.joined(separator: "\n"))
     }
@@ -389,12 +437,14 @@ struct ContactsAppScripting: Sendable {
         let verb = adding ? "add thePerson to theGroup" : "remove thePerson from theGroup"
         let script = """
             tell application id \(AppleScriptString.literal(Self.contactsBundleIdentifier))
+                \(Self.refuseIfUnsaved)
                 set theGroups to (every group whose name is \(AppleScriptString.literal(name)))
                 set thePerson to person id \(AppleScriptString.literal(contactID))
                 repeat with theGroup in theGroups
                     \(verb)
                 end repeat
                 save
+                \(Self.confirmSaved)
             end tell
             """
         _ = try run(script)
@@ -476,9 +526,15 @@ struct ContactsAppScripting: Sendable {
         process.waitUntilExit()
 
         guard process.terminationStatus == 0 else {
-            throw ToolError.storeFailure(
-                String(decoding: stderr, as: UTF8.self)
-                    .trimmingCharacters(in: .whitespacesAndNewlines))
+            let message = String(decoding: stderr, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if message.contains(Self.unsavedBeforeMarker) {
+                throw ToolError.contactsAppUnsaved(changeInMemory: false)
+            }
+            if message.contains(Self.unsavedAfterMarker) {
+                throw ToolError.contactsAppUnsaved(changeInMemory: true)
+            }
+            throw ToolError.storeFailure(message)
         }
         return String(decoding: stdout, as: UTF8.self)
     }

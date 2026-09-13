@@ -124,6 +124,16 @@ on a contact that carries a note, and to change List membership on one, because 
 reaches through Contacts.app in those cases. `contacts_status` reports both permissions
 separately, so a note that will not appear is one call away from an explanation.
 
+**A save through Contacts.app is checked, not assumed.** Contacts.app's `save` was
+observed returning with no error while saving nothing: the edits stayed in its own
+memory, reading them back through it returned them as if stored, and neither the address
+book on disk nor iCloud ever received them. So every script checks Contacts.app's
+`unsaved` property before and after its change. A call is refused untouched when
+Contacts.app already holds unsaved changes — its save writes all of them at once — and
+reports the edit as not stored when it is still unsaved after `save`. Meanwhile notes
+read as unavailable, and `contacts_status` says Contacts.app has unsaved changes.
+Quitting Contacts.app discards them.
+
 ### Signing, and why it is not optional
 
 `swift build` leaves a signature the linker generated, flagged `linker-signed`. macOS
@@ -203,6 +213,9 @@ precisely so you can tell them apart.
   rather than Contacts consent. Without it, `contacts_get` returns the whole record and
   says the note could not be read, and `update_contact` refuses the note rather than
   half-applying the change.
+- **Unsaved changes in Contacts.app block notes.** The check above cannot tell whose
+  pending edits they are, so while Contacts.app holds any, notes are neither read nor
+  written, and neither are the fields or List membership of a contact that has one.
 - **Reading a note launches the Contacts app.** In the background, but it does launch,
   and the first call after a cold start is slow.
 - **Lists cannot be created, renamed or deleted here.** Membership can be changed;

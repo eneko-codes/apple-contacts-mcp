@@ -14,6 +14,10 @@ public enum ToolError: Error, Equatable {
     case emptyListChange
     case storeFailure(String)
     case noteFailure(String)
+    /// Contacts.app holds changes it has not saved. `changeInMemory` says whether this
+    /// call's own edit is among them (it was made, then `save` did not persist it) or
+    /// whether the call was refused before touching anything.
+    case contactsAppUnsaved(changeInMemory: Bool)
     case photoWritesDisabled
 
     public var message: String {
@@ -95,8 +99,38 @@ public enum ToolError: Error, Equatable {
 
                 Contacts.app said: \(detail)
                 """
+
+        case .contactsAppUnsaved(let changeInMemory):
+            let headline =
+                changeInMemory
+                ? """
+                The change did not reach the address book.
+
+                Contacts.app accepted it and was told to save, but it still reports unsaved \
+                changes, and it raised no error. The edit exists only in Contacts.app's memory: \
+                the address book on disk, iCloud and other devices do not have it, and it is \
+                lost when Contacts.app quits. Do not report it as written.
+                """
+                : """
+                Nothing was changed: Contacts.app is holding changes it has not saved, and \
+                this server will not add to them.
+
+                Contacts.app saves every pending change at once, so writing through it now \
+                could also write stale copies of other contacts.
+                """
+            return headline + "\n\n" + Self.unsavedChangesConsequence
         }
     }
+
+    /// Shared by the refusal and by `contacts_status`, so the two cannot drift apart on
+    /// what is blocked and who resolves it.
+    static let unsavedChangesConsequence = """
+        While Contacts.app holds unsaved changes, notes cannot be read or written here, \
+        and neither can other fields or List membership on a contact that has a note. \
+        Everything else still works. Quitting Contacts.app discards those changes, so \
+        resolving it is for the person at this Mac to decide, not something to do on \
+        their behalf.
+        """
 
     /// The one message worth writing carefully: it is what the reader sees the first
     /// time the server is wired up, and it names both the switch and its location. The
