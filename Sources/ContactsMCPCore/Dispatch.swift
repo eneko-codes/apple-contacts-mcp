@@ -16,12 +16,15 @@ public struct ContactTools: Sendable {
     }
 
     public func handle(_ parameters: CallTool.Parameters) async -> CallTool.Result {
+        let started = ContinuousClock.now
         do {
             return .init(content: try await run(parameters), isError: false)
         } catch let error as ToolError {
+            Diagnostics.toolFailed(parameters.name, error: error, since: started)
             return .init(
                 content: [.text(text: error.message, annotations: nil, _meta: nil)], isError: true)
         } catch {
+            Diagnostics.toolFailed(parameters.name, error: error, since: started)
             return .init(
                 content: [
                     .text(
