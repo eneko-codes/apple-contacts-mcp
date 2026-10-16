@@ -51,3 +51,9 @@ swift test                       # all against the fake store
 ```bash
 otool -P .build/release/apple-contacts-mcp | grep -E 'NSContactsUsageDescription|NSAppleEventsUsageDescription'
 ```
+
+## Architecture
+
+**Apple silicon only, deliberately.** `scripts/pack.sh` builds for arm64 alone — a plain `swift build -c release`, no `--arch` flags — and fails if the binary
+holds any other architecture. A universal build doubles the bundle for an architecture
+macOS 26 is the last release to support. Do not add an x86_64 slice back.
