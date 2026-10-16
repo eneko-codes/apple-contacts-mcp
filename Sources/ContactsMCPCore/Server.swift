@@ -86,7 +86,9 @@ public enum ContactsMCPServer {
         // The default StdioTransport logger is a no-op handler. Leave it that way:
         // a logger that writes to stdout would interleave with the JSON-RPC stream
         // and break every response after the first log line.
+        Diagnostics.started(version: version)
         try await server.start(transport: StdioTransport())
         await server.waitUntilCompleted()
+        Diagnostics.stopped()
     }
 }
