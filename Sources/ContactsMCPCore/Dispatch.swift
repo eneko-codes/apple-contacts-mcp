@@ -18,9 +18,7 @@ public struct ContactTools: Sendable {
     public func handle(_ parameters: CallTool.Parameters) async -> CallTool.Result {
         let started = ContinuousClock.now
         do {
-            let content = try await run(parameters)
-            Diagnostics.toolCompleted(parameters.name, since: started)
-            return .init(content: content, isError: false)
+            return .init(content: try await run(parameters), isError: false)
         } catch let error as ToolError {
             Diagnostics.toolFailed(parameters.name, error: error, since: started)
             return .init(
