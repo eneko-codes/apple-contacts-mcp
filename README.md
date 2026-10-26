@@ -60,6 +60,27 @@ export), the change-history stack (`CNChangeHistoryFetchRequest`), `CNPostalAddr
 created, renamed or deleted. ContactsUI is a user-interface framework and has no place in a
 stdio server.
 
+## The rules worth knowing before you use it
+
+- **Search first.** Every tool that takes a contact takes the id `contacts_search` (or
+  `contacts_all`) returned. Ids are not guessable and can change when an account is
+  resynchronised, so look one up again rather than reusing it from an earlier conversation.
+- **There are two permissions.** Contacts covers reading and most writing. Automation —
+  permission to control Contacts.app — covers what `Contacts.framework` cannot do: the note
+  field, and changing List membership or any other field on a contact that has a note.
+  `contacts_status` reports both.
+- **Contacts.app can accept a change and not save it, with no error** — it does so for every
+  contact that Screen Time allows during downtime, whatever field changes. Every write
+  through Contacts.app is checked: a save that did not happen fails the call. Only treat a
+  change as made when the tool call succeeded.
+- **Multi-value fields are replaced wholesale, not merged.** Passing one new phone number
+  discards the others. `update_contact` reports each touched field's count before and
+  after; read the contact first when you touch phones, emails and the like.
+- **Membership is separate.** `update_contact_lists` changes only which Lists a person is in;
+  removing someone from a List never deletes them. `create_contact` can apply membership in
+  the same save as the creation, which is preferable for a new contact.
+- **Deleting is permanent** and `delete_contact` requires `confirm=true`.
+
 ## Install
 
 ### 1. Build the bundle
@@ -249,7 +270,7 @@ swift build
 swift test
 ```
 
-75 tests across four suites, all against an in-memory fake. They need no permissions and never touch a real
+The tests run entirely against an in-memory fake. They need no permissions and never touch a real
 address book — see `CLAUDE.md`, whose first section is the rule that makes that
 non-negotiable.
 
