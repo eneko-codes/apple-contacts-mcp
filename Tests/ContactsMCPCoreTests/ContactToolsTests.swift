@@ -1,5 +1,4 @@
 import Foundation
-import MCP
 import Testing
 
 @testable import ContactsMCPCore
@@ -17,10 +16,10 @@ struct ContactToolsTests {
     ) async -> (text: String, isError: Bool) {
         let result = await ContactTools(store: store, configuration: configuration)
             .handle(.init(name: name, arguments: arguments))
-        guard case .text(let text, _, _) = result.content.first else {
+        guard case .text(let text) = result.content.first else {
             return ("(no text content)", true)
         }
-        return (text, result.isError ?? false)
+        return (text, result.isError)
     }
 
     // MARK: Catalogue

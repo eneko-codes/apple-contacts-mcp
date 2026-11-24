@@ -1,12 +1,11 @@
 import Foundation
-import MCP
 
 /// Routes a `tools/call` to the store and renders the answer.
 ///
 /// This type never touches Contacts.framework directly — it goes through
 /// `ContactStore` — which is what lets the tests drive every branch below against an
 /// in-memory double, with no address book and no consent dialog.
-public struct ContactTools: Sendable {
+public struct ContactTools: ToolHandler {
     private let store: any ContactStore
     private let configuration: Configuration
 
@@ -15,29 +14,23 @@ public struct ContactTools: Sendable {
         self.configuration = configuration
     }
 
-    public func handle(_ parameters: CallTool.Parameters) async -> CallTool.Result {
+    public func handle(_ parameters: ToolCall) async -> ToolOutput {
         let started = ContinuousClock.now
         do {
-            return .init(content: try await run(parameters), isError: false)
+            return ToolOutput(content: try await run(parameters), isError: false)
         } catch let error as ToolError {
             Diagnostics.toolFailed(parameters.name, error: error, since: started)
-            return .init(
-                content: [.text(text: error.message, annotations: nil, _meta: nil)], isError: true)
+            return ToolOutput(text: error.message, isError: true)
         } catch {
             Diagnostics.toolFailed(parameters.name, error: error, since: started)
-            return .init(
-                content: [
-                    .text(
-                        text: ToolError.storeFailure(error.localizedDescription).message,
-                        annotations: nil, _meta: nil)
-                ],
-                isError: true)
+            return ToolOutput(
+                text: ToolError.storeFailure(error.localizedDescription).message, isError: true)
         }
     }
 
     /// Returns content blocks rather than a string because one tool has something other
     /// than text to hand back: `contacts_get(include_photo:)` returns the photo itself.
-    private func run(_ parameters: CallTool.Parameters) async throws -> [Tool.Content] {
+    private func run(_ parameters: ToolCall) async throws -> [ToolOutput.Block] {
         let arguments = Arguments(parameters.arguments)
 
         // Reports the permission state instead of failing on it: this is the tool you
@@ -119,8 +112,8 @@ public struct ContactTools: Sendable {
         }
     }
 
-    private func text(_ value: String) -> Tool.Content {
-        .text(text: value, annotations: nil, _meta: nil)
+    private func text(_ value: String) -> ToolOutput.Block {
+        .text(value)
     }
 
     /// The photo as an image block, or a line explaining its absence.
@@ -128,15 +121,11 @@ public struct ContactTools: Sendable {
     /// A contact whose photo cannot be fetched still returned a full record above, so
     /// this never throws: saying "there is no photo" is a better answer than turning
     /// the whole read into an error.
-    private func photo(of contact: ContactDetail) async throws -> [Tool.Content] {
+    private func photo(of contact: ContactDetail) async throws -> [ToolOutput.Block] {
         guard contact.photo != nil, let data = try await store.photo(id: contact.id) else {
             return [text("\nNo photo is stored for this contact.")]
         }
-        return [
-            .image(
-                data: data.base64EncodedString(), mimeType: Self.imageType(of: data),
-                annotations: nil, _meta: nil)
-        ]
+        return [.image(data: data.base64EncodedString(), mimeType: Self.imageType(of: data))]
     }
 
     /// Contacts stores whatever was dropped on it and records no media type, so the

@@ -68,4 +68,14 @@ struct ManifestTests {
             #expect((plist[key] as? String)?.isEmpty == false, "\(key)")
         }
     }
+
+    /// The server is built from the system's own frameworks and nothing else. A dependency
+    /// is a decision for the owner, so adding one has to break this test first.
+    @Test("The package declares no third-party dependency")
+    func noDependencies() throws {
+        let package = try String(
+            contentsOf: Self.repositoryRoot.appending(path: "Package.swift"), encoding: .utf8)
+        #expect(!package.contains(".package("), "Package.swift declares a dependency")
+        #expect(!package.contains(".product("))
+    }
 }
