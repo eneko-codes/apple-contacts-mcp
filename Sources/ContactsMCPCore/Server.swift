@@ -1,10 +1,9 @@
 import Foundation
-import MCP
 
 public enum ContactsMCPServer {
 
     public static let name = "apple-contacts-mcp"
-    public static let version = "1.0.2"
+    public static let version = "1.0.3"
 
     /// Returned from `initialize`. It carries the two things per-tool descriptions
     /// cannot state once: that ids come from a search and are not durable, and that
@@ -67,27 +66,15 @@ public enum ContactsMCPServer {
     public static func run(
         store: any ContactStore = SystemContactStore(),
         configuration: Configuration = Configuration()
-    ) async throws {
-        let tools = ContactTools(store: store, configuration: configuration)
-        let server = Server(
-            name: name,
-            version: version,
-            instructions: instructions,
-            capabilities: .init(tools: .init(listChanged: false))
-        )
-
-        await server.withMethodHandler(ListTools.self) { _ in
-            .init(tools: ToolCatalog.all())
-        }
-        await server.withMethodHandler(CallTool.self) { parameters in
-            await tools.handle(parameters)
-        }
-
-        // The default StdioTransport logger is a no-op handler. Leave it that way:
-        // a logger that writes to stdout would interleave with the JSON-RPC stream
-        // and break every response after the first log line.
+    ) async {
         Diagnostics.started(version: version)
-        try await server.start(transport: StdioTransport())
-        await server.waitUntilCompleted()
+        await serveStandardStreams(
+            handler: handler(tools: ContactTools(store: store, configuration: configuration)))
+    }
+
+    public static func handler(tools: ContactTools) -> MCPHandler {
+        MCPHandler(
+            name: name, version: version, instructions: instructions,
+            catalog: ToolCatalog.all(), tools: tools)
     }
 }

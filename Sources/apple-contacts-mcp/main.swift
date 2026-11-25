@@ -3,12 +3,5 @@ import Foundation
 
 // Launcher only. Everything testable lives in ContactsMCPCore, which the test target
 // imports; an executable target cannot be imported.
-do {
-    let configuration = Configuration.parse(Array(CommandLine.arguments.dropFirst()))
-    try await ContactsMCPServer.run(configuration: configuration)
-} catch {
-    // Exiting 0 here would be indistinguishable from a clean shutdown, which is how a
-    // server disappears mid-session with nothing to show for it.
-    Diagnostics.fatal(error)
-    exit(1)
-}
+let configuration = Configuration.parse(Array(CommandLine.arguments.dropFirst()))
+await ContactsMCPServer.run(configuration: configuration)

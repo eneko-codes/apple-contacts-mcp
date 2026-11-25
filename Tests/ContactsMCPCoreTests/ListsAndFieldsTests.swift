@@ -1,5 +1,4 @@
 import Foundation
-import MCP
 import Testing
 
 @testable import ContactsMCPCore
@@ -16,15 +15,15 @@ struct ListsAndFieldsTests {
     ) async -> (text: String, isError: Bool) {
         let result = await ContactTools(store: store)
             .handle(.init(name: name, arguments: arguments))
-        guard case .text(let text, _, _) = result.content.first else {
+        guard case .text(let text) = result.content.first else {
             return ("(no text content)", true)
         }
-        return (text, result.isError ?? false)
+        return (text, result.isError)
     }
 
     private func content(
         _ name: String, _ arguments: [String: Value] = [:], store: FakeContactStore
-    ) async -> [Tool.Content] {
+    ) async -> [ToolOutput.Block] {
         await ContactTools(store: store).handle(.init(name: name, arguments: arguments)).content
     }
 
@@ -282,7 +281,7 @@ struct ListsAndFieldsTests {
         let with = await content(
             ToolCatalog.getName, ["id": .string("id-pic"), "include_photo": .bool(true)],
             store: store)
-        guard case .image(let data, let mimeType, _, _) = with.last else {
+        guard case .image(let data, let mimeType) = with.last else {
             Issue.record("expected an image block")
             return
         }
