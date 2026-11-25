@@ -3,7 +3,8 @@ import Foundation
 /// Settings the person installing the extension can change.
 ///
 /// Everything except `disablePhotoWrites` is a fixed constant per the owner's
-/// plug-and-play rule — there is nothing else here to configure, and the per-tool
+/// plug-and-play rule (the sizes of pages and windows are in `ToolCatalog`) — there is
+/// nothing else here to configure, and the per-tool
 /// allow/ask/prohibit switch in Claude Desktop is the only other knob. `disablePhotoWrites`
 /// is the deliberate exception: a hardening switch, not a preference, in the same spirit
 /// as `apple-filesystem-mcp`'s `read_roots`/`write_roots`. It arrives as a command-line
@@ -18,22 +19,6 @@ public struct Configuration: Sendable, Equatable {
     public init(disablePhotoWrites: Bool = false) {
         self.disablePhotoWrites = disablePhotoWrites
     }
-
-    /// Default page size for `contacts_search` and `contacts_all` when the caller does
-    /// not say. The tool's own `limit` argument still wins; this only sets the default.
-    public static let searchLimit = 25
-
-    public static let searchLimitRange = 1...100
-
-    /// `contacts_all` gets a higher ceiling than search does. Enumerating an address
-    /// book of two thousand people through a hundred-row window is twenty calls, and
-    /// its compact mode prints one short line per contact, so a large page is cheap in
-    /// a way a search result full of phone numbers and companies is not.
-    public static let listLimitRange = 1...500
-
-    /// Paging ceiling. Declared here so the advertised schema and the enforced clamp
-    /// cannot drift: both read this one value.
-    public static let offsetRange = 0...10_000
 
     /// True when an argument is an unsubstituted manifest placeholder.
     ///

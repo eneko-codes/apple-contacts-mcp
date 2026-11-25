@@ -58,6 +58,22 @@ struct ManifestTests {
             try infoPlist()["CFBundleShortVersionString"] as? String == ContactsMCPServer.version)
     }
 
+    /// The manifest and the README are plain text and cannot take a figure from a
+    /// constant, so this holds the bounds they state to the ones the code enforces.
+    @Test("The manifest and the README state the bounds the server enforces")
+    func documentsStateTheBounds() throws {
+        let deadline = "after \(ContactTools.defaultTimeout.components.seconds) seconds"
+        let description = try #require(try manifest()["long_description"] as? String)
+        #expect(description.contains(deadline))
+
+        let readme = try String(
+            contentsOf: Self.repositoryRoot.appending(path: "README.md"), encoding: .utf8)
+        #expect(readme.contains(deadline))
+        #expect(readme.contains("stops after \(ToolCatalog.scanTimeLimit.components.seconds) seconds"))
+        #expect(readme.contains("at most \(ContactPhoto.longestSide) pixels"))
+        #expect(ContactPhoto.longestBytes == 1_500_000 && readme.contains("1.5 MB"))
+    }
+
     /// Each governs a different permission: without the Contacts string no tool works,
     /// without the Apple events string no note does. A missing one is denied silently,
     /// with no dialog and nothing logged.

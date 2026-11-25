@@ -199,8 +199,11 @@ struct ContactsAppScripting: Sendable {
                 }
             }
             if !custom.isEmpty {
+                // The names are the caller's own text, so the error repeats a few of
+                // them, each shortened, and counts the others.
                 unsupported.append(
-                    "instant_messages with a custom service (\(custom.joined(separator: ", ")))")
+                    "instant_messages with a custom service "
+                        + "(\(Format.few(custom.map(ToolStandard.echo), limit: 5)))")
             }
         }
         if changes.photoPath != .unchanged { unsupported.append("photo_path") }

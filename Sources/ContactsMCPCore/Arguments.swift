@@ -2,12 +2,20 @@ import Foundation
 
 /// Typed access to a `tools/call` argument bag.
 ///
-/// The one rule that shapes this type: an absent key and an explicit `null` mean
-/// different things. Omitting `job_title` leaves it alone; passing `job_title: null`
-/// empties it. Every accessor below preserves that distinction instead of collapsing
-/// both to nil.
-public struct Arguments {
+/// Two rules shape this type. An absent key and an explicit `null` mean different things
+/// to an edit: omitting `job_title` leaves it alone, passing `job_title: null` empties it,
+/// and every edit accessor below keeps that distinction. Everywhere else `null` means "not
+/// given". And nothing is ever read leniently: a value of the wrong type is refused with
+/// the form expected, because ignoring it would do something other than what was asked.
+///
+/// A class, not a struct, so that reading a number can also record that it was moved into
+/// its range without every reader having to be `mutating`. One instance serves one call
+/// and never leaves it.
+public final class Arguments {
     private let values: [String: Value]
+
+    /// One sentence for each number that was moved into its range, in the order read.
+    public private(set) var notices: [String] = []
 
     public init(_ values: [String: Value]?) {
         self.values = values ?? [:]
@@ -15,33 +23,74 @@ public struct Arguments {
 
     // MARK: Scalars
 
+    /// `nil` when the argument is absent or null, which mean the same outside an edit.
+    private func given(_ name: String) -> Value? {
+        guard let raw = values[name], !raw.isNull else { return nil }
+        return raw
+    }
+
+    private static func text(_ raw: Value, _ name: String) throws -> String {
+        guard let text = raw.stringValue else {
+            throw ToolError.badArgument(name: name, reason: "text was expected")
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     public func requiredString(_ name: String) throws -> String {
-        guard let raw = values[name]?.stringValue else { throw ToolError.missingArgument(name) }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let raw = given(name) else { throw ToolError.missingArgument(name) }
+        let trimmed = try Self.text(raw, name)
         guard !trimmed.isEmpty else {
             throw ToolError.badArgument(name: name, reason: "it is empty")
         }
         return trimmed
     }
 
-    public func optionalString(_ name: String) -> String? {
-        values[name]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// `nil` when the argument is absent, null or empty text.
+    public func optionalString(_ name: String) throws -> String? {
+        guard let raw = given(name) else { return nil }
+        let trimmed = try Self.text(raw, name)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
-    public func bool(_ name: String, default fallback: Bool = false) -> Bool {
-        values[name]?.boolValue ?? fallback
+    public func bool(_ name: String, default fallback: Bool) throws -> Bool {
+        guard let raw = given(name) else { return fallback }
+        guard let flag = raw.boolValue else {
+            throw ToolError.badArgument(name: name, reason: "true or false was expected")
+        }
+        return flag
     }
 
-    /// Clamps rather than rejects. A model asking for 500 results wants "as many as
-    /// you will give me", and failing the call teaches it nothing the cap does not.
+    /// A quantity: a size, a count. Outside its range it is moved to the nearest allowed
+    /// value, and `notices` gains the sentence that says which value was used. A model
+    /// asking for 500 results wants as many as it can have, and failing the call would
+    /// teach it nothing the notice does not.
     public func int(_ name: String, default fallback: Int, in range: ClosedRange<Int>) throws
         -> Int
     {
-        guard let raw = values[name] else { return fallback }
+        guard let raw = given(name) else { return fallback }
         guard let number = raw.intValue else {
-            throw ToolError.badArgument(name: name, reason: "an integer was expected")
+            throw ToolError.badArgument(name: name, reason: "a whole number was expected")
         }
-        return Swift.min(Swift.max(number, range.lowerBound), range.upperBound)
+        return ToolStandard.clamp(number, to: range, argument: name, notices: &notices)
+    }
+
+    /// The `limit` and `offset` of a listing, read the same way by every tool that pages.
+    public func page(defaultLimit: Int, limits: ClosedRange<Int>) throws -> (limit: Int, offset: Int) {
+        (
+            try int("limit", default: defaultLimit, in: limits),
+            try int("offset", default: 0, in: ToolCatalog.offsetRange)
+        )
+    }
+
+    /// One text member of an item of a list, or `nil` when the item does not carry it.
+    private static func member(_ key: String, of object: [String: Value], in name: String) throws
+        -> String?
+    {
+        guard let raw = object[key], !raw.isNull else { return nil }
+        guard let text = raw.stringValue else {
+            throw ToolError.badArgument(name: name, reason: "\"\(key)\" must be text in every item")
+        }
+        return text
     }
 
     // MARK: Labelled values
@@ -50,21 +99,18 @@ public struct Arguments {
     /// up in practice depending on how the model reads the schema, and rejecting the
     /// bare-string form buys nothing.
     public func labelledValues(_ name: String) throws -> [LabelledValue]? {
-        guard let raw = values[name] else { return nil }
-        if case .null = raw { return [] }
-        guard let entries = raw.arrayValue else {
-            throw ToolError.badArgument(name: name, reason: "an array was expected")
-        }
-        return try entries.map { entry in
+        try objectList(name) { entry in
             if let text = entry.stringValue {
                 return LabelledValue(label: nil, value: text)
             }
-            guard let object = entry.objectValue, let value = object["value"]?.stringValue else {
+            guard let object = entry.objectValue,
+                let value = try Self.member("value", of: object, in: name)
+            else {
                 throw ToolError.badArgument(
                     name: name,
                     reason: "each item must be a string, or an object with a \"value\" key")
             }
-            return LabelledValue(label: object["label"]?.stringValue, value: value)
+            return LabelledValue(label: try Self.member("label", of: object, in: name), value: value)
         }
     }
 
@@ -75,13 +121,15 @@ public struct Arguments {
             if let text = entry.stringValue {
                 return LabelledDate(label: nil, components: try Self.dateComponents(text, name))
             }
-            guard let object = entry.objectValue, let value = object["value"]?.stringValue else {
+            guard let object = entry.objectValue,
+                let value = try Self.member("value", of: object, in: name)
+            else {
                 throw ToolError.badArgument(
                     name: name,
                     reason: "each item must be a date, or an object with a \"value\" key")
             }
             return LabelledDate(
-                label: object["label"]?.stringValue,
+                label: try Self.member("label", of: object, in: name),
                 components: try Self.dateComponents(value, name))
         }
     }
@@ -91,34 +139,38 @@ public struct Arguments {
     /// read-modify-write.
     public func socialProfiles(_ name: String) throws -> [SocialProfile]? {
         try objectList(name) { entry in
-            guard let object = entry.objectValue, let service = object["service"]?.stringValue
+            guard let object = entry.objectValue,
+                let service = try Self.member("service", of: object, in: name)
             else {
                 throw ToolError.badArgument(
                     name: name, reason: "each item must be an object with a \"service\" key")
             }
-            let username = object["username"]?.stringValue ?? ""
-            let url = object["url"]?.stringValue ?? ""
+            let username = try Self.member("username", of: object, in: name) ?? ""
+            let url = try Self.member("url", of: object, in: name) ?? ""
             guard !username.isEmpty || !url.isEmpty else {
                 throw ToolError.badArgument(
                     name: name, reason: "each item needs a \"username\" or a \"url\"")
             }
             return SocialProfile(
-                label: object["label"]?.stringValue, service: service, username: username,
-                urlString: url, userIdentifier: object["user_identifier"]?.stringValue ?? "")
+                label: try Self.member("label", of: object, in: name), service: service,
+                username: username, urlString: url,
+                userIdentifier: try Self.member("user_identifier", of: object, in: name) ?? "")
         }
     }
 
     public func instantMessages(_ name: String) throws -> [InstantMessage]? {
         try objectList(name) { entry in
-            guard let object = entry.objectValue, let service = object["service"]?.stringValue,
-                let username = object["username"]?.stringValue
+            guard let object = entry.objectValue,
+                let service = try Self.member("service", of: object, in: name),
+                let username = try Self.member("username", of: object, in: name)
             else {
                 throw ToolError.badArgument(
                     name: name,
                     reason: "each item must be an object with \"service\" and \"username\" keys")
             }
             return InstantMessage(
-                label: object["label"]?.stringValue, service: service, username: username)
+                label: try Self.member("label", of: object, in: name), service: service,
+                username: username)
         }
     }
 
@@ -130,13 +182,14 @@ public struct Arguments {
                 throw ToolError.badArgument(
                     name: name, reason: "each item must be an object with address components")
             }
-            let field = { (key: String) in object[key]?.stringValue ?? "" }
+            let field = { (key: String) in try Self.member(key, of: object, in: name) ?? "" }
             let address = PostalAddress(
-                label: object["label"]?.stringValue,
-                street: field("street"), subLocality: field("sub_locality"), city: field("city"),
-                subAdministrativeArea: field("sub_administrative_area"), state: field("state"),
-                postalCode: field("postal_code"), country: field("country"),
-                isoCountryCode: field("iso_country_code"))
+                label: try Self.member("label", of: object, in: name),
+                street: try field("street"), subLocality: try field("sub_locality"),
+                city: try field("city"),
+                subAdministrativeArea: try field("sub_administrative_area"),
+                state: try field("state"), postalCode: try field("postal_code"),
+                country: try field("country"), isoCountryCode: try field("iso_country_code"))
             guard !address.oneLine.isEmpty else {
                 throw ToolError.badArgument(
                     name: name, reason: "each item needs at least one address component")
@@ -158,11 +211,12 @@ public struct Arguments {
 
     // MARK: Edits
 
-    public func stringEdit(_ name: String) -> FieldEdit<String> {
+    /// Anything but text or null is refused: taking it for "not given" would report an
+    /// update as made while leaving the field as it was.
+    public func stringEdit(_ name: String) throws -> FieldEdit<String> {
         guard let raw = values[name] else { return .unchanged }
         if case .null = raw { return .cleared }
-        guard let text = raw.stringValue else { return .unchanged }
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = try Self.text(raw, name)
         return trimmed.isEmpty ? .cleared : .set(trimmed)
     }
 
@@ -195,7 +249,7 @@ public struct Arguments {
     /// There is nothing to clear here: a contact is a person or a company, never
     /// neither, so this edit has no `.cleared` case.
     public func kindEdit(_ name: String) throws -> FieldEdit<ContactKind> {
-        guard let raw = optionalString(name), !raw.isEmpty else { return .unchanged }
+        guard let raw = try optionalString(name) else { return .unchanged }
         guard let kind = ContactKind(rawValue: raw.lowercased()) else {
             throw ToolError.badArgument(
                 name: name,
@@ -205,12 +259,11 @@ public struct Arguments {
     }
 
     public func birthdayEdit(_ name: String) throws -> FieldEdit<DateComponents> {
-        guard let raw = values[name] else { return .unchanged }
-        if case .null = raw { return .cleared }
-        guard let text = raw.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
-            !text.isEmpty
-        else { return .cleared }
-        return .set(try Self.dateComponents(text, name))
+        switch try stringEdit(name) {
+        case .unchanged: return .unchanged
+        case .cleared: return .cleared
+        case .set(let text): return .set(try Self.dateComponents(text, name))
+        }
     }
 
     // MARK: Dates
@@ -219,28 +272,42 @@ public struct Arguments {
     /// year is written, which Contacts stores and this server must not invent a year
     /// for.
     public func birthday(_ name: String) throws -> DateComponents? {
-        guard let raw = optionalString(name), !raw.isEmpty else { return nil }
+        guard let raw = try optionalString(name) else { return nil }
         return try Self.dateComponents(raw, name)
+    }
+
+    /// A leap year, so that 29 February with no year is a day that exists.
+    private static let yearForDatesWithoutOne = 2000
+
+    /// Whether the Gregorian calendar has that day: 31 April and, outside a leap year,
+    /// 29 February do not exist, and Contacts would store either as given.
+    private static func exists(year: Int, month: Int, day: Int) -> Bool {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .gmt
+        return (1...9999).contains(year)
+            && DateComponents(calendar: calendar, year: year, month: month, day: day).isValidDate
     }
 
     static func dateComponents(_ raw: String, _ name: String) throws -> DateComponents {
         if raw.hasPrefix("--") {
-            let parts = raw.dropFirst(2).split(separator: "-")
+            let parts = raw.dropFirst(2).split(separator: "-", omittingEmptySubsequences: false)
             guard parts.count == 2, let month = Int(parts[0]), let day = Int(parts[1]),
-                (1...12).contains(month), (1...31).contains(day)
+                exists(year: yearForDatesWithoutOne, month: month, day: day)
             else {
                 throw ToolError.badArgument(
-                    name: name, reason: "expected --MM-DD for a date with no year")
+                    name: name,
+                    reason: "expected --MM-DD for a date with no year, naming a day that month has")
             }
             return DateComponents(month: month, day: day)
         }
 
-        let parts = raw.split(separator: "-")
+        let parts = raw.split(separator: "-", omittingEmptySubsequences: false)
         guard parts.count == 3, let year = Int(parts[0]), let month = Int(parts[1]),
-            let day = Int(parts[2]), (1...12).contains(month), (1...31).contains(day)
+            let day = Int(parts[2]), exists(year: year, month: month, day: day)
         else {
             throw ToolError.badArgument(
-                name: name, reason: "expected YYYY-MM-DD, or --MM-DD when the year is unknown")
+                name: name,
+                reason: "expected YYYY-MM-DD, or --MM-DD when the year is unknown, naming a date that exists")
         }
         return DateComponents(year: year, month: month, day: day)
     }

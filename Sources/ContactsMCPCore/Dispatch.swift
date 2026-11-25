@@ -1,4 +1,49 @@
 import Foundation
+import Synchronization
+
+/// Returns the first of two outcomes: the work finishing, or the limit passing.
+///
+/// The timer is a dispatch timer, not a `Task.sleep`, and the work is not a child of a task
+/// group. A synchronous call into Contacts that never returns holds its thread and cannot
+/// be cancelled, and a task group would wait for it forever; a timer on the cooperative
+/// pool could be starved by the same stuck threads. The stuck work is abandoned, not
+/// stopped: it is cancelled, which the loops that can notice do notice, and its late
+/// result is discarded.
+enum Deadline {
+
+    private final class Outcome<Value: Sendable>: Sendable {
+        private let continuation: Mutex<CheckedContinuation<Value?, Never>?>
+
+        init(_ continuation: CheckedContinuation<Value?, Never>) {
+            self.continuation = Mutex(continuation)
+        }
+
+        /// Only the first caller resumes; the other finds it empty.
+        func resume(returning value: Value?) {
+            continuation.withLock { pending in
+                pending?.resume(returning: value)
+                pending = nil
+            }
+        }
+    }
+
+    /// `nil` when `limit` passed before `work` finished.
+    static func run<Value: Sendable>(
+        within limit: Duration, _ work: @escaping @Sendable () async -> Value
+    ) async -> Value? {
+        let seconds = Double(limit.components.seconds) + Double(limit.components.attoseconds) / 1e18
+        return await withCheckedContinuation { continuation in
+            let outcome = Outcome<Value>(continuation)
+            let task = Task {
+                outcome.resume(returning: await work())
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + seconds) {
+                outcome.resume(returning: nil)
+                task.cancel()
+            }
+        }
+    }
+}
 
 /// Routes a `tools/call` to the store and renders the answer.
 ///
@@ -8,24 +53,53 @@ import Foundation
 public struct ContactTools: ToolHandler {
     private let store: any ContactStore
     private let configuration: Configuration
+    private let timeout: Duration
 
-    public init(store: any ContactStore, configuration: Configuration = Configuration()) {
+    /// A write can run three scripts through Contacts.app one after another, each allowed
+    /// a minute because the first may be waiting on a consent dialog that somebody has to
+    /// answer. This leaves room for that and still answers inside
+    /// `ToolStandard.timeLimit`, so a call that never comes back is reported by this
+    /// server, in its own words, and not by the client giving up on it.
+    public static let defaultTimeout = Duration.seconds(180)
+
+    public init(
+        store: any ContactStore, configuration: Configuration = Configuration(),
+        timeout: Duration = ContactTools.defaultTimeout
+    ) {
         self.store = store
         self.configuration = configuration
+        self.timeout = timeout
     }
 
     public func handle(_ parameters: ToolCall) async -> ToolOutput {
         let started = ContinuousClock.now
-        do {
-            return ToolOutput(content: try await run(parameters), isError: false)
-        } catch let error as ToolError {
-            Diagnostics.toolFailed(parameters.name, error: error, since: started)
-            return ToolOutput(text: error.message, isError: true)
-        } catch {
-            Diagnostics.toolFailed(parameters.name, error: error, since: started)
-            return ToolOutput(
-                text: ToolError.storeFailure(error.localizedDescription).message, isError: true)
+        let outcome = await Deadline.run(within: timeout) {
+            do {
+                return Result<[ToolOutput.Block], any Error>.success(try await run(parameters))
+            } catch {
+                return .failure(error)
+            }
         }
+        switch outcome {
+        case .success(let content)?:
+            return ToolOutput(content: content, isError: false)
+        case .failure(let error)?:
+            return failure(error, tool: parameters.name, since: started)
+        case nil:
+            return failure(
+                ToolError.timedOut(
+                    seconds: Int(timeout.components.seconds),
+                    wrote: ToolCatalog.writes(parameters.name)),
+                tool: parameters.name, since: started)
+        }
+    }
+
+    private func failure(
+        _ error: any Error, tool: String, since started: ContinuousClock.Instant
+    ) -> ToolOutput {
+        Diagnostics.toolFailed(tool, error: error, since: started)
+        let known = error as? ToolError ?? .storeFailure(error.localizedDescription)
+        return ToolOutput(text: known.message, isError: true)
     }
 
     /// Returns content blocks rather than a string because one tool has something other
@@ -44,41 +118,76 @@ public struct ContactTools: ToolHandler {
                         binaryPath: Self.binaryPath))
             ]
         }
+        guard ToolCatalog.all().contains(where: { $0.name == parameters.name }) else {
+            throw ToolError.unknownTool(parameters.name)
+        }
 
         try await requireAccess()
 
         switch parameters.name {
         case ToolCatalog.searchName:
             let query = try arguments.requiredString("query")
-            let limit = try arguments.int(
-                "limit", default: Configuration.searchLimit, in: Configuration.searchLimitRange)
-            let offset = try arguments.int("offset", default: 0, in: Configuration.offsetRange)
-            let page = try await store.search(query: query, limit: limit, offset: offset)
-            return [text(Format.searchResults(page, query: query, offset: offset))]
-
-        case ToolCatalog.allName:
-            let list = arguments.optionalString("list").flatMap { $0.isEmpty ? nil : $0 }
-            let limit = try arguments.int(
-                "limit", default: Configuration.searchLimit, in: Configuration.listLimitRange)
-            let offset = try arguments.int("offset", default: 0, in: Configuration.offsetRange)
-            let page = try await store.all(list: list, limit: limit, offset: offset)
+            let page = try arguments.page(
+                defaultLimit: ToolCatalog.defaultContactLimit, limits: ToolCatalog.contactLimitRange)
+            let matches = try await store.search(query: query)
+            var notices = arguments.notices
+            if let scanned = matches.scanStoppedAfter {
+                notices.append(
+                    Notice.partial(
+                        after: scanned, things: "contacts", narrowBy: ToolCatalog.scanNarrowing))
+            }
+            let rows = matches.contacts.sorted(by: Self.precedes)
             return [
                 text(
-                    Format.everyone(
-                        page, list: list, offset: offset, compact: arguments.bool("compact")))
+                    Self.page(of: rows, page, things: "contacts", notices: notices) {
+                        Format.contacts(
+                            $0, heading: Format.searchHeading(total: rows.count, query: query),
+                            none: Format.noMatch(
+                                query: query, partial: matches.scanStoppedAfter != nil),
+                            total: rows.count, compact: false)
+                    })
+            ]
+
+        case ToolCatalog.allName:
+            let list = try arguments.optionalString("list")
+            let compact = try arguments.bool("compact", default: false)
+            let page = try arguments.page(
+                defaultLimit: ToolCatalog.defaultContactLimit, limits: ToolCatalog.contactLimitRange)
+            let rows = try await store.all(list: list).sorted(by: Self.precedes)
+            return [
+                text(
+                    Self.page(of: rows, page, things: "contacts", notices: arguments.notices) {
+                        Format.contacts(
+                            $0, heading: Format.everyoneHeading(total: rows.count, list: list),
+                            none: Format.nobody(list: list), total: rows.count, compact: compact)
+                    })
             ]
 
         case ToolCatalog.listsName:
-            return [text(Format.lists(try await store.lists()))]
+            let page = try arguments.page(
+                defaultLimit: ToolCatalog.defaultListLimit, limits: ToolCatalog.listLimitRange)
+            return [text(lists(try await store.lists(), page, notices: arguments.notices))]
 
         case ToolCatalog.getName:
             let id = try arguments.requiredString("id")
+            let includePhoto = try arguments.bool("include_photo", default: false)
+            let characterOffset = try arguments.int(
+                "character_offset", default: 0, in: ToolCatalog.offsetRange)
+            let maxCharacters = try arguments.int(
+                "max_characters", default: ToolCatalog.defaultMaxCharacters,
+                in: ToolCatalog.maxCharactersRange)
             guard let contact = try await store.fetch(id: id) else {
                 throw ToolError.notFound(id: id)
             }
-            var content = [text(Format.detail(contact))]
-            if arguments.bool("include_photo") {
-                content.append(contentsOf: try await photo(of: contact))
+            let photo = includePhoto ? try await photo(of: contact) : .notAsked
+            var content = [
+                text(
+                    Format.recordWindow(
+                        contact, characterOffset: characterOffset, maxCharacters: maxCharacters,
+                        notices: arguments.notices + photo.notices))
+            ]
+            if case .image(let data) = photo {
+                content.append(.image(data: data.base64EncodedString(), mimeType: "image/jpeg"))
             }
             return content
 
@@ -101,14 +210,13 @@ public struct ContactTools: ToolHandler {
 
         case ToolCatalog.deleteName:
             let id = try arguments.requiredString("id")
-            guard arguments.bool("confirm") else {
+            guard try arguments.bool("confirm", default: false) else {
                 throw ToolError.confirmationRequired(action: "Deleting a contact")
             }
             return [text(Format.deleted(try await store.delete(id: id)))]
 
         default:
-            throw ToolError.badArgument(
-                name: "name", reason: "'\(parameters.name)' is not a tool of this server")
+            throw ToolError.unknownTool(parameters.name)
         }
     }
 
@@ -116,24 +224,119 @@ public struct ContactTools: ToolHandler {
         .text(value)
     }
 
-    /// The photo as an image block, or a line explaining its absence.
-    ///
-    /// A contact whose photo cannot be fetched still returned a full record above, so
-    /// this never throws: saying "there is no photo" is a better answer than turning
-    /// the whole read into an error.
-    private func photo(of contact: ContactDetail) async throws -> [ToolOutput.Block] {
-        guard contact.photo != nil, let data = try await store.photo(id: contact.id) else {
-            return [text("\nNo photo is stored for this contact.")]
-        }
-        return [.image(data: data.base64EncodedString(), mimeType: Self.imageType(of: data))]
+    // MARK: Pages
+
+    /// By name the way a person reads a list, then by id, so that two contacts of the same
+    /// name never tie and a page boundary falls in the same place on the next call.
+    static func precedes(_ lhs: ContactSummary, _ rhs: ContactSummary) -> Bool {
+        let order = lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName)
+        return order == .orderedSame ? lhs.id < rhs.id : order == .orderedAscending
     }
 
-    /// Contacts stores whatever was dropped on it and records no media type, so the
-    /// type is read back off the first bytes. JPEG covers almost everything a camera
-    /// or a sync produces; PNG is the other one worth recognising.
-    private static func imageType(of data: Data) -> String {
-        let png: [UInt8] = [0x89, 0x50, 0x4E, 0x47]
-        return data.starts(with: png) ? "image/png" : "image/jpeg"
+    /// One page of `rows`, which are every matching row already in the order the tool
+    /// states: the notices, where the page sits in the whole, whether a value in it was
+    /// shortened, then the rows.
+    ///
+    /// `ToolStandard.page` with one addition: the sentence about shortened values depends
+    /// on the rows the page ends up holding, so it has to be decided after they are
+    /// rendered, where that helper takes its notices beforehand.
+    static func page<Row>(
+        of rows: [Row], _ page: (limit: Int, offset: Int), things: String, notices: [String],
+        render: ([Row]) -> Format.Listing
+    ) -> String {
+        ToolStandard.fitting(page.limit) { size in
+            let shown = Array(rows.dropFirst(page.offset).prefix(size))
+            let listing = render(shown)
+            var notices = notices
+            if let position = Notice.page(
+                offset: page.offset, count: shown.count, total: rows.count, things: things)
+            {
+                notices.append(position)
+            }
+            if listing.clipped { notices.append(Self.clippedNotice) }
+            return ToolStandard.withNotices(notices, listing.text)
+        }
+    }
+
+    static let clippedNotice = Notice.clipped(
+        field: "A long value", width: ToolCatalog.cellWidth, tool: ToolCatalog.getName)
+
+    /// Lists and accounts are two listings in one result, so one `limit` and one `offset`
+    /// page both: the same window of each, each with its own sentence when the window is
+    /// not all of it. There are rarely more accounts than a page holds, and then the
+    /// accounts simply all sit on the first page.
+    private func lists(_ book: AddressBookLists, _ page: (limit: Int, offset: Int), notices: [String])
+        -> String
+    {
+        func byName(_ lhs: String, _ rhs: String) -> ComparisonResult {
+            lhs.localizedCaseInsensitiveCompare(rhs)
+        }
+        // Down to the id, because two accounts can each hold a list of the same name.
+        let lists = book.lists.sorted {
+            let name = byName($0.name, $1.name)
+            if name != .orderedSame { return name == .orderedAscending }
+            let account = byName($0.accountName ?? "", $1.accountName ?? "")
+            return account == .orderedSame ? $0.id < $1.id : account == .orderedAscending
+        }
+        let accounts = book.accounts.sorted {
+            let name = byName($0.name, $1.name)
+            return name == .orderedSame ? $0.id < $1.id : name == .orderedAscending
+        }
+        return ToolStandard.fitting(page.limit) { size in
+            let shownLists = Array(lists.dropFirst(page.offset).prefix(size))
+            let shownAccounts = Array(accounts.dropFirst(page.offset).prefix(size))
+            let listing = Format.lists(
+                shownLists, totalLists: lists.count, accounts: shownAccounts,
+                totalAccounts: accounts.count)
+            var notices = notices
+            notices += [
+                Notice.page(
+                    offset: page.offset, count: shownLists.count, total: lists.count,
+                    things: "lists"),
+                Notice.page(
+                    offset: page.offset, count: shownAccounts.count, total: accounts.count,
+                    things: "accounts"),
+            ].compactMap { $0 }
+            if listing.clipped { notices.append(Self.clippedNotice) }
+            return ToolStandard.withNotices(notices, listing.text)
+        }
+    }
+
+    // MARK: Photo
+
+    /// What `include_photo` adds to a record.
+    private enum Photo {
+        case notAsked
+        case image(Data)
+        case unavailable(String)
+
+        /// The sentence that stands in for a photo that was asked for and is not
+        /// returned. It goes before the record, like everything a result does not hold.
+        var notices: [String] {
+            if case .unavailable(let reason) = self { return [reason] }
+            return []
+        }
+    }
+
+    /// The photo, reduced to what a result may carry, or a line explaining its absence.
+    ///
+    /// A contact whose photo cannot be returned still has a full record, so this never
+    /// fails the call: saying "there is no photo" is a better answer than turning the
+    /// whole read into an error. One contact has one photo, so a result never holds more
+    /// than `ToolCatalog.photosPerCall` images.
+    private func photo(of contact: ContactDetail) async throws -> Photo {
+        guard contact.photo != nil, let data = try await store.photo(id: contact.id) else {
+            return .unavailable("No photo is stored for this contact.")
+        }
+        guard let reduced = ContactPhoto.reduced(data) else {
+            return .unavailable(
+                """
+                The stored photo (\(Format.size(data.count))) is not returned: it could not \
+                be read as an image and reduced to \(ContactPhoto.longestSide) pixels and \
+                \(Format.size(ContactPhoto.longestBytes)). Open the card in Contacts to see it.
+                """)
+        }
+        return .image(reduced)
     }
 
     /// Asks once when macOS has not yet prompted, so the first real call surfaces the
@@ -151,21 +354,21 @@ public struct ContactTools: ToolHandler {
     private func draft(from arguments: Arguments) throws -> ContactDraft {
         var draft = ContactDraft()
         if case .set(let kind) = try arguments.kindEdit("contact_type") { draft.kind = kind }
-        draft.namePrefix = arguments.optionalString("name_prefix") ?? ""
-        draft.givenName = arguments.optionalString("given_name") ?? ""
-        draft.middleName = arguments.optionalString("middle_name") ?? ""
-        draft.familyName = arguments.optionalString("family_name") ?? ""
-        draft.previousFamilyName = arguments.optionalString("previous_family_name") ?? ""
-        draft.nameSuffix = arguments.optionalString("name_suffix") ?? ""
-        draft.nickname = arguments.optionalString("nickname") ?? ""
-        draft.phoneticGivenName = arguments.optionalString("phonetic_given_name") ?? ""
-        draft.phoneticMiddleName = arguments.optionalString("phonetic_middle_name") ?? ""
-        draft.phoneticFamilyName = arguments.optionalString("phonetic_family_name") ?? ""
+        draft.namePrefix = try arguments.optionalString("name_prefix") ?? ""
+        draft.givenName = try arguments.optionalString("given_name") ?? ""
+        draft.middleName = try arguments.optionalString("middle_name") ?? ""
+        draft.familyName = try arguments.optionalString("family_name") ?? ""
+        draft.previousFamilyName = try arguments.optionalString("previous_family_name") ?? ""
+        draft.nameSuffix = try arguments.optionalString("name_suffix") ?? ""
+        draft.nickname = try arguments.optionalString("nickname") ?? ""
+        draft.phoneticGivenName = try arguments.optionalString("phonetic_given_name") ?? ""
+        draft.phoneticMiddleName = try arguments.optionalString("phonetic_middle_name") ?? ""
+        draft.phoneticFamilyName = try arguments.optionalString("phonetic_family_name") ?? ""
         draft.phoneticOrganizationName =
-            arguments.optionalString("phonetic_organization_name") ?? ""
-        draft.organization = arguments.optionalString("organization") ?? ""
-        draft.jobTitle = arguments.optionalString("job_title") ?? ""
-        draft.department = arguments.optionalString("department") ?? ""
+            try arguments.optionalString("phonetic_organization_name") ?? ""
+        draft.organization = try arguments.optionalString("organization") ?? ""
+        draft.jobTitle = try arguments.optionalString("job_title") ?? ""
+        draft.department = try arguments.optionalString("department") ?? ""
         draft.phones = try arguments.labelledValues("phones") ?? []
         draft.emails = try arguments.labelledValues("emails") ?? []
         draft.urls = try arguments.labelledValues("urls") ?? []
@@ -178,11 +381,11 @@ public struct ContactTools: ToolHandler {
         // Checked here, before the store is ever called, rather than only skipping the
         // assignment: silently dropping the argument would let the rest of the contact
         // through with no sign that photo_path was refused rather than merely absent.
-        if let photoPath = arguments.optionalString("photo_path"), !photoPath.isEmpty {
+        if let photoPath = try arguments.optionalString("photo_path") {
             guard !configuration.disablePhotoWrites else { throw ToolError.photoWritesDisabled }
             draft.photoPath = photoPath
         }
-        draft.note = arguments.optionalString("note") ?? ""
+        draft.note = try arguments.optionalString("note") ?? ""
         draft.lists = try arguments.labelledValues("lists")?.map(\.value) ?? []
 
         guard !draft.isEmpty else { throw ToolError.emptyContact }
@@ -192,22 +395,22 @@ public struct ContactTools: ToolHandler {
     private func changes(from arguments: Arguments) throws -> ContactChanges {
         var changes = ContactChanges()
         changes.kind = try arguments.kindEdit("contact_type")
-        changes.namePrefix = arguments.stringEdit("name_prefix")
-        changes.givenName = arguments.stringEdit("given_name")
-        changes.middleName = arguments.stringEdit("middle_name")
-        changes.familyName = arguments.stringEdit("family_name")
-        changes.previousFamilyName = arguments.stringEdit("previous_family_name")
-        changes.nameSuffix = arguments.stringEdit("name_suffix")
-        changes.nickname = arguments.stringEdit("nickname")
-        changes.phoneticGivenName = arguments.stringEdit("phonetic_given_name")
-        changes.phoneticMiddleName = arguments.stringEdit("phonetic_middle_name")
-        changes.phoneticFamilyName = arguments.stringEdit("phonetic_family_name")
-        changes.phoneticOrganizationName = arguments.stringEdit("phonetic_organization_name")
-        changes.organization = arguments.stringEdit("organization")
-        changes.jobTitle = arguments.stringEdit("job_title")
-        changes.department = arguments.stringEdit("department")
-        changes.note = arguments.stringEdit("note")
-        let photoPathEdit = arguments.stringEdit("photo_path")
+        changes.namePrefix = try arguments.stringEdit("name_prefix")
+        changes.givenName = try arguments.stringEdit("given_name")
+        changes.middleName = try arguments.stringEdit("middle_name")
+        changes.familyName = try arguments.stringEdit("family_name")
+        changes.previousFamilyName = try arguments.stringEdit("previous_family_name")
+        changes.nameSuffix = try arguments.stringEdit("name_suffix")
+        changes.nickname = try arguments.stringEdit("nickname")
+        changes.phoneticGivenName = try arguments.stringEdit("phonetic_given_name")
+        changes.phoneticMiddleName = try arguments.stringEdit("phonetic_middle_name")
+        changes.phoneticFamilyName = try arguments.stringEdit("phonetic_family_name")
+        changes.phoneticOrganizationName = try arguments.stringEdit("phonetic_organization_name")
+        changes.organization = try arguments.stringEdit("organization")
+        changes.jobTitle = try arguments.stringEdit("job_title")
+        changes.department = try arguments.stringEdit("department")
+        changes.note = try arguments.stringEdit("note")
+        let photoPathEdit = try arguments.stringEdit("photo_path")
         if photoPathEdit != .unchanged {
             guard !configuration.disablePhotoWrites else { throw ToolError.photoWritesDisabled }
         }
@@ -235,9 +438,18 @@ public struct ContactTools: ToolHandler {
         let remove = try arguments.labelledValues("remove")?.map(\.value) ?? []
         guard !add.isEmpty || !remove.isEmpty else { throw ToolError.emptyListChange }
 
+        // Each change is its own save. A call that passed its deadline has already been
+        // answered, so it stops before the next one instead of going on changing the
+        // address book behind an answer that said the outcome was unknown.
         var contact: ContactDetail?
-        for list in remove { contact = try await store.removeFromList(id: id, list: list) }
-        for list in add { contact = try await store.addToList(id: id, list: list) }
+        for list in remove {
+            try Task.checkCancellation()
+            contact = try await store.removeFromList(id: id, list: list)
+        }
+        for list in add {
+            try Task.checkCancellation()
+            contact = try await store.addToList(id: id, list: list)
+        }
 
         guard let contact else { throw ToolError.notFound(id: id) }
         return Format.listsChanged(contact, added: add, removed: remove)

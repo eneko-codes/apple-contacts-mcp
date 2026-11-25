@@ -137,18 +137,22 @@ public struct SystemContactStore: ContactStore {
 
     // MARK: Reads
 
-    public func search(query: String, limit: Int, offset: Int) async throws -> ContactSearchPage {
+    public func search(query: String) async throws -> ContactMatches {
         let store = Self.shared
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
 
         var matches = try predicateMatches(for: trimmed, in: store)
+        var scanStoppedAfter: Int?
         // Contacts offers no predicate for organisation, nickname or job title, and
         // compound predicates are unsupported. Scanning is the only way to answer
         // "who works at Neo", so it runs as a fallback rather than as the fast path.
         if matches.isEmpty {
-            matches = try scanMatches(for: trimmed, in: store)
+            (matches, scanStoppedAfter) = try scanMatches(for: trimmed, in: store)
         }
-        return page(from: Array(matches.values), limit: limit, offset: offset)
+        try Task.checkCancellation()
+        return ContactMatches(
+            contacts: matches.values.map { summary(from: $0, displayName: displayName($0)) },
+            scanStoppedAfter: scanStoppedAfter)
     }
 
     /// Runs the three predicates Contacts does support and unions them by identifier.
@@ -178,13 +182,26 @@ public struct SystemContactStore: ContactStore {
 
     /// Full enumeration filtered in memory. Only reached when the predicates found
     /// nothing, which keeps the common case off this path.
+    ///
+    /// It has no index to lean on, so it is the one read here whose time grows with the
+    /// address book. It stops at `ToolCatalog.scanTimeLimit`, or when the call it serves
+    /// was abandoned, and says how many contacts it had looked at by then.
     private func scanMatches(for query: String, in store: CNContactStore) throws
-        -> [String: CNContact]
+        -> (found: [String: CNContact], stoppedAfter: Int?)
     {
-        guard !query.isEmpty else { return [:] }
+        guard !query.isEmpty else { return ([:], nil) }
         var found: [String: CNContact] = [:]
+        var scanned = 0
+        var stoppedAfter: Int?
+        let deadline = ContinuousClock.now + ToolCatalog.scanTimeLimit
         let request = CNContactFetchRequest(keysToFetch: Self.summaryKeys)
-        try store.enumerateContacts(with: request) { contact, _ in
+        try store.enumerateContacts(with: request) { contact, stop in
+            if ContinuousClock.now >= deadline || Task.isCancelled {
+                stoppedAfter = scanned
+                stop.pointee = true
+                return
+            }
+            scanned += 1
             let haystack = [
                 contact.givenName, contact.middleName, contact.familyName, contact.nickname,
                 contact.organizationName,
@@ -193,10 +210,10 @@ public struct SystemContactStore: ContactStore {
                 found[contact.identifier] = contact
             }
         }
-        return found
+        return (found, stoppedAfter)
     }
 
-    public func all(list: String?, limit: Int, offset: Int) async throws -> ContactSearchPage {
+    public func all(list: String?) async throws -> [ContactSummary] {
         let store = Self.shared
         let request = CNContactFetchRequest(keysToFetch: Self.summaryKeys)
         if let list {
@@ -206,25 +223,19 @@ public struct SystemContactStore: ContactStore {
 
         var found: [CNContact] = []
         do {
-            try store.enumerateContacts(with: request) { contact, _ in found.append(contact) }
+            try store.enumerateContacts(with: request) { contact, stop in
+                // An abandoned call has already been answered; stop reading for it.
+                if Task.isCancelled {
+                    stop.pointee = true
+                    return
+                }
+                found.append(contact)
+            }
         } catch {
             throw ToolError.storeFailure(Self.describe(error))
         }
-        return page(from: found, limit: limit, offset: offset)
-    }
-
-    /// Sorts by display name and cuts the requested window out of the result.
-    ///
-    /// The display name is formatted once per contact, not twice per comparison:
-    /// CNContactFormatter inside a sort predicate is O(n log n) formatter builds, and
-    /// an unfiltered enumeration can put the whole address book through it.
-    private func page(from contacts: [CNContact], limit: Int, offset: Int) -> ContactSearchPage {
-        let ordered = contacts
-            .map { (name: displayName($0), contact: $0) }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        let window = ordered.dropFirst(offset).prefix(limit)
-            .map { summary(from: $0.contact, displayName: $0.name) }
-        return ContactSearchPage(results: Array(window), total: ordered.count)
+        try Task.checkCancellation()
+        return found.map { summary(from: $0, displayName: displayName($0)) }
     }
 
     public func fetch(id: String) async throws -> ContactDetail? {
@@ -292,8 +303,11 @@ public struct SystemContactStore: ContactStore {
     /// Everything else goes through `diagnostic(for:)` for the full Contacts.framework
     /// expansion.
     private static func describe(_ error: Error) -> String {
-        if let toolError = error as? ToolError { return toolError.message }
-        return diagnostic(for: error)
+        // Contacts can attach a Core Data stack and whole records to an error. Each
+        // description is cut here, where two of them may be joined into one message and
+        // what follows them (which fields were not applied) must survive.
+        let whole = (error as? ToolError)?.message ?? diagnostic(for: error)
+        return ToolError.clipped(whole, to: ToolError.diagnosticLimit)
     }
 
     /// Just enough of an error to identify it, for a failure whose cause is already
@@ -409,7 +423,7 @@ public struct SystemContactStore: ContactStore {
                     memberCount: memberIdentifiers(ofGroup: group.identifier, in: store).count))
         }
 
-        // Unordered on purpose: ordering is presentation, and `Format.lists` does it in
+        // Unordered on purpose: ordering belongs to the tool layer, which does it in
         // one place so the fake and the real store cannot drift apart on it.
         return AddressBookLists(lists: lists, accounts: accounts)
     }
@@ -630,7 +644,7 @@ public struct SystemContactStore: ContactStore {
     private static func imageData(atPath path: String) throws -> Data {
         guard let data = FileManager.default.contents(atPath: path) else {
             throw ToolError.badArgument(
-                name: "photo_path", reason: "no readable file at '\(path)'")
+                name: "photo_path", reason: "no readable file at '\(ToolStandard.echo(path))'")
         }
         return data
     }

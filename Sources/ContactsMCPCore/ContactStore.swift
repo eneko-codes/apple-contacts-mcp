@@ -36,17 +36,18 @@ public protocol ContactStore: Sendable {
     /// when Contacts.app is not running, since asking would launch it.
     func contactsAppHasUnsavedChanges() -> Bool
 
-    /// `offset` is a plain index into the match list. Contacts has no cursor of its
-    /// own, and an offset is stable enough for a result set the caller is paging
-    /// through in one sitting.
-    func search(query: String, limit: Int, offset: Int) async throws -> ContactSearchPage
+    /// Every contact that matches, in no particular order. Ordering and paging are the
+    /// tool layer's, done in one place so the fake and the real store cannot drift apart
+    /// on them: Contacts has no cursor of its own, and an address book is small enough to
+    /// hold one line per contact in memory.
+    func search(query: String) async throws -> ContactMatches
 
-    /// Every contact, or every contact in one list. Paged the same way `search` is.
+    /// Every contact, or every contact in one list, in no particular order.
     ///
     /// `list` accepts an identifier or an exact name: the identifier is what
     /// `lists()` returns, the name is what a person reads off the screen, and
     /// refusing the second would make the tool unusable from a conversation.
-    func all(list: String?, limit: Int, offset: Int) async throws -> ContactSearchPage
+    func all(list: String?) async throws -> [ContactSummary]
 
     func fetch(id: String) async throws -> ContactDetail?
 
@@ -55,8 +56,9 @@ public protocol ContactStore: Sendable {
     /// same list.
     func lists() async throws -> AddressBookLists
 
-    /// The contact's photo, at full size. Separate from `fetch` so a record can report
-    /// that a photo exists without every read dragging the image along with it.
+    /// The contact's photo, as stored. Separate from `fetch` so a record can report
+    /// that a photo exists without every read dragging the image along with it. The tool
+    /// layer reduces it (`ContactPhoto`) before it goes into a result.
     func photo(id: String) async throws -> Data?
 
     func create(_ draft: ContactDraft) async throws -> ContactDetail
@@ -100,14 +102,15 @@ public struct ContactUpdateResult: Sendable, Equatable {
     }
 }
 
-public struct ContactSearchPage: Sendable, Equatable {
-    public let results: [ContactSummary]
-    /// Total matches, not the number returned. The formatter needs it to say how many
-    /// results were withheld rather than implying the page was everything.
-    public let total: Int
+public struct ContactMatches: Sendable, Equatable {
+    public let contacts: [ContactSummary]
+    /// Set when the search had to walk the whole address book and ran out of time: how
+    /// many contacts it had looked at. The ones it never reached may match too, so the
+    /// result has to say so instead of reading as the whole answer.
+    public let scanStoppedAfter: Int?
 
-    public init(results: [ContactSummary], total: Int) {
-        self.results = results
-        self.total = total
+    public init(contacts: [ContactSummary], scanStoppedAfter: Int? = nil) {
+        self.contacts = contacts
+        self.scanStoppedAfter = scanStoppedAfter
     }
 }
