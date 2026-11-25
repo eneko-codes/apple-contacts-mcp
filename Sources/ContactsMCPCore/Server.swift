@@ -3,12 +3,12 @@ import Foundation
 public enum ContactsMCPServer {
 
     public static let name = "apple-contacts-mcp"
-    public static let version = "1.0.3"
+    public static let version = "1.1.0"
 
-    /// Returned from `initialize`. It carries the two things per-tool descriptions
-    /// cannot state once: that ids come from a search and are not durable, and that
-    /// what this server is allowed to do is decided by the permission switches in the
-    /// client, not by the code.
+    /// Returned from `initialize`. It carries what per-tool descriptions cannot state
+    /// once: that ids come from a search and are not durable, that every result is
+    /// bounded and says how to get the rest, and that what this server is allowed to do
+    /// is decided by the permission switches in the client, not by the code.
     public static let instructions = """
         Access to the macOS Contacts app through Contacts.framework.
 
@@ -20,6 +20,20 @@ public enum ContactsMCPServer {
         contacts there are, who is in a list — and contacts_lists shows the Lists and the \
         accounts they live in. contacts_get returns every field Contacts stores for one \
         person, including which Lists they belong to.
+
+        RESULTS ARE BOUNDED. contacts_search, contacts_all and contacts_lists return one \
+        page of rows in name order. When rows exist that a result does not hold, its first \
+        lines say how many there are and the offset of the next page: pass limit and \
+        offset. contacts_get returns a long record one window at a time: its first lines \
+        give the character_offset of the rest, and max_characters sets the size of a \
+        window. A write shows the start of the record it wrote; contacts_get reads the \
+        rest. A limit, an offset or a window outside its range is moved to the nearest \
+        allowed value, and the first lines say which was used. note replaces the whole \
+        note, so read all of a long one before writing it back.
+
+        A call that has not finished after \(ContactTools.defaultTimeout.components.seconds) \
+        seconds is abandoned and answered with an error saying so. For a write the change \
+        may still have been made: read the contact again before retrying.
 
         There are two permissions, and contacts_status reports both. Contacts covers \
         reading and most writing. Automation — permission to control Contacts.app — covers \

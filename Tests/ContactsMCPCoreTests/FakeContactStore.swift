@@ -1,4 +1,7 @@
+import CoreGraphics
 import Foundation
+import ImageIO
+import UniformTypeIdentifiers
 
 @testable import ContactsMCPCore
 
@@ -19,10 +22,15 @@ final class FakeContactStore: ContactStore, @unchecked Sendable {
     var photos: [String: Data] = [:]
     private(set) var deletedIDs: [String] = []
     private(set) var accessRequests = 0
-    /// The `limit` dispatch actually resolved, so a test can pin that an omitted
-    /// argument falls back to `Configuration.searchLimit` without needing enough
-    /// fixtures to observe truncation.
-    private(set) var lastSearchLimit: Int?
+    /// What a search reports when its scan of the whole address book ran out of time:
+    /// how many contacts it had looked at.
+    var scanStoppedAfter: Int?
+    /// How long every read waits before answering, so a test can outlast a deadline. The
+    /// wait ends early when the call is abandoned, as a real read's loop does.
+    var readDelay: Duration?
+    /// How long a membership change takes. It ignores cancellation, like a save that is
+    /// already with Contacts: once started it lands.
+    var membershipDelay: Duration?
 
     init(
         status: ContactsAuthorization = .authorized,
@@ -53,36 +61,35 @@ final class FakeContactStore: ContactStore, @unchecked Sendable {
         return status
     }
 
-    func search(query: String, limit: Int, offset: Int) async throws -> ContactSearchPage {
-        lastSearchLimit = limit
+    func search(query: String) async throws -> ContactMatches {
+        if let readDelay { try await Task.sleep(for: readDelay) }
         let matches = contacts.filter {
             $0.displayName.localizedCaseInsensitiveContains(query)
                 || $0.organization.localizedCaseInsensitiveContains(query)
         }
-        return page(matches, limit: limit, offset: offset)
+        return ContactMatches(contacts: summaries(matches), scanStoppedAfter: scanStoppedAfter)
     }
 
-    func all(list: String?, limit: Int, offset: Int) async throws -> ContactSearchPage {
+    func all(list: String?) async throws -> [ContactSummary] {
+        if let readDelay { try await Task.sleep(for: readDelay) }
         var matches = contacts
         if let list {
             let resolved = try resolve(list)
             let ids = members[resolved.id] ?? []
             matches = matches.filter { ids.contains($0.id) }
         }
-        return page(matches, limit: limit, offset: offset)
+        return summaries(matches)
     }
 
-    private func page(_ matches: [ContactDetail], limit: Int, offset: Int) -> ContactSearchPage {
-        let ordered = matches.sorted {
-            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
-        }
-        let window = ordered.dropFirst(offset).prefix(limit).map {
+    /// Backwards, because the real store hands contacts over in no order at all and the
+    /// tool layer is what has to put them in one.
+    private func summaries(_ matches: [ContactDetail]) -> [ContactSummary] {
+        matches.reversed().map {
             ContactSummary(
                 id: $0.id, displayName: $0.displayName,
                 organization: $0.organization.isEmpty ? nil : $0.organization,
                 phone: $0.phones.first?.value, email: $0.emails.first?.value)
         }
-        return ContactSearchPage(results: Array(window), total: ordered.count)
     }
 
     func fetch(id: String) async throws -> ContactDetail? {
@@ -151,11 +158,13 @@ final class FakeContactStore: ContactStore, @unchecked Sendable {
     }
 
     func addToList(id: String, list: String) async throws -> ContactDetail {
-        try setMembership(id: id, list: list, member: true)
+        if let membershipDelay { try? await Task.sleep(for: membershipDelay) }
+        return try setMembership(id: id, list: list, member: true)
     }
 
     func removeFromList(id: String, list: String) async throws -> ContactDetail {
-        try setMembership(id: id, list: list, member: false)
+        if let membershipDelay { try? await Task.sleep(for: membershipDelay) }
+        return try setMembership(id: id, list: list, member: false)
     }
 
     private func setMembership(id: String, list: String, member: Bool) throws -> ContactDetail {
@@ -234,6 +243,31 @@ enum Fixtures {
             socialProfiles: socialProfiles, instantMessages: instantMessages,
             relations: relations, birthday: birthday, nonGregorianBirthday: nil,
             dates: dates, photo: photo, lists: [], note: note)
+    }
+
+    struct PictureFailure: Error {}
+
+    /// A picture made here, of nothing: a white field with a blue half, of the size asked
+    /// for. No photograph of anyone is ever used as a fixture.
+    static func picture(width: Int, height: Int, type: UTType = .png) throws -> Data {
+        guard
+            let context = CGContext(
+                data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { throw PictureFailure() }
+        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.setFillColor(CGColor(red: 0.2, green: 0.5, blue: 0.8, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width / 2, height: height))
+        let output = NSMutableData()
+        guard let image = context.makeImage(),
+            let destination = CGImageDestinationCreateWithData(
+                output, type.identifier as CFString, 1, nil)
+        else { throw PictureFailure() }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else { throw PictureFailure() }
+        return output as Data
     }
 
     /// Three invented people. Names are deliberately absurd so a fixture can never be

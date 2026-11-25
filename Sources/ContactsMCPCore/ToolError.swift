@@ -6,6 +6,7 @@ public enum ToolError: Error, Equatable {
     case notAuthorized(ContactsAuthorization)
     case missingArgument(String)
     case badArgument(name: String, reason: String)
+    case unknownTool(String)
     case notFound(id: String)
     case listNotFound(String)
     case confirmationRequired(action: String)
@@ -19,6 +20,33 @@ public enum ToolError: Error, Equatable {
     /// This call's own save did not happen; its edit was discarded by quitting Contacts.app.
     case contactsAppSaveFailed
     case photoWritesDisabled
+    /// The call passed its deadline. `wrote` says whether the tool can change the address
+    /// book, because then the work that was left running may still do so.
+    case timedOut(seconds: Int, wrote: Bool)
+
+    /// How much of a text that Contacts or Contacts.app wrote one message repeats, in
+    /// UTF-16 units, the way `ToolStandard.longestError` is counted. Their errors can run
+    /// to a Core Data stack trace; the longest fixed message plus this stays well inside
+    /// the longest error.
+    static let detailLimit = 4_000
+
+    /// The share of `detailLimit` one diagnostic may take where a message joins two of
+    /// them, so that what follows them (which fields were not applied) is never cut off.
+    static let diagnosticLimit = 1_500
+
+    /// `text` cut to `limit` UTF-16 units without splitting a character, saying how much
+    /// was left out.
+    static func clipped(_ text: String, to limit: Int = detailLimit) -> String {
+        guard text.utf16.count > limit else { return text }
+        var kept = ""
+        var units = 0
+        for character in text {
+            units += character.utf16.count
+            if units > limit { break }
+            kept.append(character)
+        }
+        return kept + "… (\(text.count - kept.count) more characters not shown)"
+    }
 
     public var message: String {
         switch self {
@@ -31,9 +59,35 @@ public enum ToolError: Error, Equatable {
         case .badArgument(let name, let reason):
             return "Argument '\(name)' is not valid: \(reason)"
 
+        case .unknownTool(let name):
+            return "'\(ToolStandard.echo(name))' is not a tool of this server."
+
+        case .timedOut(let seconds, let wrote):
+            guard wrote else {
+                return """
+                    The call did not finish within \(seconds) seconds and was abandoned. \
+                    Nothing was changed.
+
+                    Contacts or Contacts.app may not be answering, or a macOS permission \
+                    dialog may be waiting for an answer at the Mac; contacts_status reports \
+                    the permissions. Try again, and ask for less if it happens twice: a \
+                    name, a phone number or an email address in contacts_search, or one \
+                    List in contacts_all.
+                    """
+            }
+            return """
+                The call did not finish within \(seconds) seconds, so its outcome is not known.
+
+                It was abandoned, not undone: a change it had already handed to Contacts or \
+                Contacts.app may still have been made, in whole or in part. Read the contact \
+                with contacts_get before trying again. contacts_status says whether a \
+                permission is still to be granted at the Mac and whether Contacts.app is \
+                holding unsaved changes.
+                """
+
         case .notFound(let id):
             return """
-                No contact exists with id '\(id)'.
+                No contact exists with id '\(ToolStandard.echo(id))'.
 
                 Contacts identifiers change when an account is resynchronised. Look the
                 contact up again with contacts_search instead of reusing an earlier id.
@@ -41,7 +95,7 @@ public enum ToolError: Error, Equatable {
 
         case .listNotFound(let reference):
             return """
-                No list called '\(reference)' exists.
+                No list called '\(ToolStandard.echo(reference))' exists.
 
                 Call contacts_lists to see the lists and the accounts they belong to. A
                 list can be named by its exact name or by its id.
@@ -76,7 +130,7 @@ public enum ToolError: Error, Equatable {
                 """
 
         case .storeFailure(let detail):
-            return "Contacts returned an error: \(detail)"
+            return "Contacts returned an error: \(Self.clipped(detail))"
 
         case .photoWritesDisabled:
             return """
@@ -97,7 +151,7 @@ public enum ToolError: Error, Equatable {
                   System Settings → Privacy & Security → Automation → "apple-contacts-mcp"
                   → enable "Contacts"
 
-                Contacts.app said: \(detail)
+                Contacts.app said: \(Self.clipped(detail))
                 """
 
         case .contactsAppUnsaved:

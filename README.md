@@ -28,14 +28,14 @@ permission switches alphabetically, so this groups the destructive tools togethe
 | Tool | Kind | What it does |
 |---|---|---|
 | `contacts_status` | read | Reports both permissions, the binary in use and the default page size. Reads no records. |
-| `contacts_search` | read | Finds people by name, nickname, company, phone or email. One line per hit. |
-| `contacts_all` | read | Every contact, or everyone in one List. Paged, with a compact names-and-ids mode. |
-| `contacts_lists` | read | The Lists, how many people each holds, and the accounts they live in. |
-| `contacts_get` | read | Every field stored for one id, including List membership and the note. |
-| `create_contact` | write | Adds a new contact. |
-| `update_contact` | write | Changes fields. Omitted = untouched, `""` or `[]` = cleared. |
+| `contacts_search` | read | Finds people by name, nickname, company, phone or email. One line per hit, a page at a time. |
+| `contacts_all` | read | Every contact, or everyone in one List, a page at a time, with a compact names-and-ids mode. |
+| `contacts_lists` | read | The Lists, how many people each holds, and the accounts they live in, a page at a time. |
+| `contacts_get` | read | Every field stored for one id, including List membership and the note; a long record a window at a time. The photo only on request, reduced. |
+| `create_contact` | write | Adds a new contact and shows the start of the record stored. |
+| `update_contact` | write | Changes fields. Omitted = untouched, `""` or `[]` = cleared. Shows the start of the record afterwards. |
 | `update_contact_lists` | write | Adds to Lists or removes from them. Never deletes a contact. |
-| `delete_contact` | **destructive** | Permanent. Requires `confirm: true`. |
+| `delete_contact` | **destructive** | Permanent. Requires `confirm: true`. Shows as much of the removed record as one result holds. |
 
 Search first, then use the returned id — Contacts identifiers are not guessable and can
 change when an account resynchronises.
@@ -79,7 +79,28 @@ stdio server.
 - **Membership is separate.** `update_contact_lists` changes only which Lists a person is in;
   removing someone from a List never deletes them. `create_contact` can apply membership in
   the same save as the creation, which is preferable for a new contact.
-- **Deleting is permanent** and `delete_contact` requires `confirm=true`.
+- **Deleting is permanent** and `delete_contact` requires `confirm=true`. Its result is the
+  last copy of the record, and it holds only so much: read a contact with a long note in
+  full with `contacts_get` before deleting it.
+- **Every result is bounded, and says what it left out.** Contacts, Lists and accounts come
+  one page at a time, ordered by name and then id; one contact's record comes one window at
+  a time when it is long, which a long note makes it. When a result does not hold
+  everything, its first lines say how much there is and the exact arguments that return
+  the rest: `limit` and `offset` for rows, `character_offset` and `max_characters` for a
+  record. A number outside its range is moved to the nearest allowed value and the first
+  lines say which one was used; a value of the wrong type, or a date that does not exist,
+  is refused. A value too wide for its row is shortened there, and the result says so. A
+  write shows the start of the record it wrote, and `contacts_get` resumes at the
+  character where it stopped. The sizes are constants in `ToolCatalog.swift`, which the
+  schemas and descriptions quote. No result is longer than `ToolStandard.longestResult`:
+  each tool keeps to that itself, and the protocol layer cuts, with a notice, any result
+  that did not.
+- **`note` replaces the whole note.** Read all of a long note, every window of it, before
+  writing it back; what was not read is lost.
+- **Every call has a deadline.** One that has not finished after 180 seconds is abandoned and
+  answered with an error that says so. A read changed nothing. A write may still land,
+  because a save already handed to Contacts cannot be recalled: read the contact again
+  before retrying.
 
 ## Install
 
@@ -257,7 +278,11 @@ precisely so you can tell them apart.
 - **Value lists replace, they do not merge.** Passing `phones` to `update_contact`
   discards the numbers you did not include.
 - **Organization-only search is a fallback.** Contacts offers predicates for name, email
-  and phone only, so a company search falls back to scanning the address book.
+  and phone only, so a company search falls back to scanning the address book. The scan
+  stops after 20 seconds and the result then says it is partial.
+- **The photo is returned reduced.** `include_photo` gives a JPEG of at most 1568 pixels a
+  side and 1.5 MB, never the stored original, which can be many times that. A stored photo
+  that cannot be decoded is reported, not returned.
 - **macOS has no partial Contacts access.** `CNAuthorizationStatus.limited` is iOS-only;
   here it is all or nothing.
 

@@ -144,12 +144,13 @@ struct ContactToolsTests {
     }
 
     /// A page that stops short must say so; otherwise it reads as the whole answer.
-    @Test("A truncated page announces what it withheld")
+    @Test("A truncated page announces, before the rows, what it withheld")
     func truncationIsAnnounced() async {
         let result = await call(
             "contacts_search", ["query": .string("Fictitious"), "limit": .int(1)])
-        #expect(result.text.contains("…1 more"))
-        #expect(result.text.contains("offset=1"))
+        #expect(result.text.hasPrefix("Showing 1–1 of 2 contacts. Pass offset=1 for the next page.\n\n"))
+        #expect(result.text.contains("id=id-aurora"))
+        #expect(!result.text.contains("id=id-basilio"))
     }
 
     @Test("No matches says so instead of returning an empty list")

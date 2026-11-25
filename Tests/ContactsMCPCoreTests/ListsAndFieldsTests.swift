@@ -266,14 +266,16 @@ struct ListsAndFieldsTests {
         #expect(answer.text.contains("contacts_status"))
     }
 
+    /// The image is the stored one redrawn as a JPEG no larger than a result may carry
+    /// (`BoundsTests` holds the sizes), so it is no longer the stored bytes themselves.
     @Test("The photo comes back as an image only when asked for")
-    func photoIsOptIn() async {
+    func photoIsOptIn() async throws {
         let store = FakeContactStore(contacts: [
             Fixtures.detail(
                 id: "id-pic", displayName: "Pixel Imaginary",
                 photo: PhotoInfo(thumbnailByteCount: 12))
         ])
-        store.photos["id-pic"] = Data([0x89, 0x50, 0x4E, 0x47, 0x01, 0x02])
+        store.photos["id-pic"] = try Fixtures.picture(width: 64, height: 48)
 
         let without = await content(ToolCatalog.getName, ["id": .string("id-pic")], store: store)
         #expect(without.count == 1)
@@ -285,8 +287,8 @@ struct ListsAndFieldsTests {
             Issue.record("expected an image block")
             return
         }
-        #expect(mimeType == "image/png")
-        #expect(Data(base64Encoded: data) == store.photos["id-pic"])
+        #expect(mimeType == "image/jpeg")
+        #expect(Data(base64Encoded: data)?.starts(with: [0xFF, 0xD8]) == true)
     }
 
     @Test("Asking for a photo that does not exist says so instead of failing")

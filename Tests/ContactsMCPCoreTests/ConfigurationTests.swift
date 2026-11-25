@@ -3,9 +3,9 @@ import Testing
 
 @testable import ContactsMCPCore
 
-/// Almost everything in `Configuration` is a fixed constant now — the owner's
-/// plug-and-play rule removed the connector setting that used to let a person override
-/// the search-result default. `disablePhotoWrites` is the one exception, arriving as a
+/// Almost everything is a fixed constant now — the owner's plug-and-play rule removed the
+/// connector setting that used to let a person override the search-result default, and
+/// the sizes live in `ToolCatalog`. `disablePhotoWrites` is the one exception, arriving as a
 /// command-line flag exactly the way `apple-filesystem-mcp`'s `read_roots`/`write_roots`
 /// do. What is worth pinning is that the constant is what the tool layer actually uses,
 /// not merely what it says in a doc comment, and that the flag parses the way the
@@ -15,16 +15,20 @@ struct ConfigurationTests {
 
     @Test("The documented default is 25")
     func defaultHolds() {
-        #expect(Configuration.searchLimit == 25)
+        #expect(ToolCatalog.defaultContactLimit == 25)
     }
 
-    @Test("contacts_search falls back to Configuration.searchLimit when limit is omitted")
+    @Test("contacts_search falls back to the fixed default when limit is omitted")
     func searchUsesTheFixedDefault() async {
-        let store = FakeContactStore(contacts: Fixtures.sample)
-        let tools = ContactTools(store: store)
-        _ = await tools.handle(
+        let contacts = (0..<ToolCatalog.defaultContactLimit + 3).map {
+            Fixtures.detail(
+                id: "id-\($0)", displayName: String(format: "Invented %03d", $0),
+                organization: "Fictitious Ltd")
+        }
+        let tools = ContactTools(store: FakeContactStore(contacts: contacts))
+        let result = await tools.handle(
             .init(name: "contacts_search", arguments: ["query": .string("Fictitious")]))
-        #expect(store.lastSearchLimit == Configuration.searchLimit)
+        #expect(result.text.components(separatedBy: "id=id-").count - 1 == ToolCatalog.defaultContactLimit)
     }
 
     @Test("disablePhotoWrites defaults to false, so an unconfigured install is unaffected")

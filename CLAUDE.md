@@ -16,7 +16,9 @@ Reading the address book is always fine. Do not modify or delete an existing con
 
 A local MCP server (Swift 6, stdio transport) exposing the macOS Contacts app through `Contacts.framework`. Reads and writes the address book on this Mac. No network, no credential, no cloud API — iCloud is only the sync engine, gated by TCC consent. **No third-party dependency**: `Package.swift` lists none, and the MCP protocol (JSON-RPC over stdio) is `MCPServer.swift` over Foundation. Adding a package needs the owner's say-so.
 
-**`MCPServer.swift`, `Value.swift` and `Tests/…/MCPProtocolTests.swift` are copied unchanged into every one of the owner's MCP servers** (the test file differs only in its `@testable import`). A change to one is made to every copy in the same piece of work; never let a copy drift.
+**`MCPServer.swift`, `Value.swift`, `ToolStandard.swift` and the tests `MCPProtocolTests.swift` and `ToolStandardTests.swift` are copied unchanged into every one of the owner's MCP servers** (the test files differ only in their `@testable import`). A change to one is made to every copy in the same piece of work; never let a copy drift.
+
+`ToolStandard.swift` holds what every tool here must keep to: the longest result, description and error, the time a call may take, the fixed wording of each notice that says what a result left out (`Notice`), and the guard `MCPServer.swift` passes every result through. A tool bounds its own result and says how to get the rest; the guard only catches the one that forgot.
 
 ## Apple frameworks
 
@@ -59,6 +61,12 @@ otool -P .build/release/apple-contacts-mcp | grep -E 'NSContactsUsageDescription
 **Apple silicon only, deliberately.** `scripts/pack.sh` builds for arm64 alone — a plain `swift build -c release`, no `--arch` flags — and fails if the binary
 holds any other architecture. A universal build doubles the bundle for an architecture
 macOS 26 is the last release to support. Do not add an x86_64 slice back.
+
+`ContactStore` is the only door to the address book. `SystemContactStore` implements it over Contacts.framework and Contacts.app; tests implement it with `FakeContactStore`. The store returns every match in no order: ordering and paging belong to `ContactTools`, so the fake and the real store cannot disagree about them.
+
+**How a tool keeps to the tool standard here.** Sizes are constants in `ToolCatalog`, and the schemas, the descriptions and the instructions quote them by interpolation, never as literals. `Arguments.int` moves a quantity (`limit`, `offset`, a window) into its range and collects the sentence that says so in `notices`; every other accessor refuses a value of the wrong type, and a date that does not exist. A listing (`contacts_search`, `contacts_all`, `contacts_lists`) sorts its rows into an order it states, down to the id so that nothing ties, then goes through `ContactTools.page`, which puts the notices and the page's position (`Notice.page`) before the rows. `Format.Clipper` shortens a value wider than `ToolCatalog.cellWidth` inside a row and the page says so (`Notice.clipped`). A contact's record is one text with no length limit, `Format.record`: `contacts_get` returns a window of it (`ToolStandard.window`), and a write shows its start, so the offset where a receipt stops is the `character_offset` that `contacts_get` resumes from. Everything renders through `ToolStandard.fitting`, which halves a page or a window whose text would still be longer than a result may be, so a tool never leans on the guard. A photo is not text and the guard does not shorten it: `ContactPhoto` redraws it within a pixel and a byte ceiling, or it is not returned. Errors repeat a caller's text only through `ToolStandard.echo`, and a text Contacts wrote only through `ToolError.clipped`.
+
+**Every call has a deadline**, `ContactTools.defaultTimeout`, inside `ToolStandard.timeLimit`. At it the call is answered with an error and the work is cancelled, not stopped: a read's enumeration and the loop over Lists in `update_contact_lists` notice and stop, but a save already handed to Contacts or Contacts.app may still land, which is why the error for a write says its outcome is unknown. The fallback scan of `contacts_search` has its own, shorter limit (`ToolCatalog.scanTimeLimit`) and answers with what it found (`Notice.partial`). `BoundsTests` holds every bound, notice and length to this: a new listing takes `limit` and `offset` through `Arguments.page` and gets an entry in its `listings`.
 
 ## Diagnostics
 
